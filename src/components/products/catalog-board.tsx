@@ -587,7 +587,18 @@ function ProductRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate font-semibold">{product.title}</p>
+          {/* A real <button>, not a clickable <div>: it has to be reachable by
+              keyboard and announced as an action. Only the NAME opens the
+              editor — making the whole row clickable would fight the drag
+              handle and the overflow menu that live in it. */}
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            className="truncate rounded-sm text-left font-semibold hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none"
+          >
+            {product.title}
+          </button>
           {product.lifecycle === "draft" ? (
             <Badge className="border-warning/30 bg-warning-bg text-warning">
               Borrador
