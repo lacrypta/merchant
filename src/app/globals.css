@@ -1,26 +1,455 @@
-@import "tailwindcss";
+/* ─────────────────────────────────────────────────────────────────────────
+   Merchant Manager · La Crypta
+   Tailwind v4 — config-less. There is no tailwind.config.ts in this project
+   and none should ever be created (components.json "tailwind.config": "").
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+   Dark-only. Tokens live in :root AND .dark with identical values, and
+   <html> always carries class="dark", so shadcn's shipped `dark:` utilities
+   resolve against one palette.
+
+   Brand values lifted live from lacrypta.ar (itself a shadcn/Tailwind site).
+   ───────────────────────────────────────────────────────────────────────── */
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* shadcn's init writes `(&:is(.dark *))`, which matches only DESCENDANTS of
+   .dark — not the .dark element itself. We put class="dark" on <html>, so
+   `dark:` would silently break on <html> and <body> without :where(). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ═══════════════════════════════════════════════════════════════════════
+   1. Custom properties — full color values, never bare triplets.
+      Never write hsl(var(--x)); the var already holds a complete color.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root,
+.dark {
+  color-scheme: dark;
+
+  /* ── shadcn contract · exact values from lacrypta.ar ─────────────────── */
+  --background: hsl(0 0% 3.9%); /* #0A0A0A */
+  --foreground: hsl(0 0% 98%); /* #FAFAFA · 18.97:1 */
+
+  /* Lifted +1.5% from lacrypta.ar's --card (which equals --background).
+     Card==background works on a marketing page where borders do all the
+     work; it collapses in a dashboard with card-in-popover-in-drawer.
+     One-line revert: --card: var(--background); */
+  --card: #0f0f0f;
+  --card-foreground: hsl(0 0% 98%);
+  --popover: #161616;
+  --popover-foreground: hsl(0 0% 98%);
+
+  --primary: hsl(85 93% 65%); /* #B4F953 · 15.63:1 on bg */
+  --primary-foreground: hsl(0 0% 9%); /* #171717 · 14.15:1 on lime */
+
+  --secondary: hsl(0 0% 14.9%); /* #262626 */
+  --secondary-foreground: hsl(0 0% 98%);
+  --muted: hsl(0 0% 14.9%);
+  --muted-foreground: hsl(0 0% 63.9%); /* #A3A3A3 · 7.85:1 on bg */
+  --accent: hsl(0 0% 14.9%);
+  --accent-foreground: hsl(0 0% 98%);
+
+  /* 1.98:1 as text — BACKGROUND ONLY. Error text/icons use --danger. */
+  --destructive: hsl(0 62.8% 30.6%); /* #7F1D1D */
+  --destructive-foreground: hsl(0 0% 98%); /* 9.60:1 on --destructive */
+
+  /* 1.31:1 — DECORATIVE ONLY (card edges, dividers). Any border that IS
+     the control (input, checkbox, switch, drag handle) must use
+     --border-strong or it fails WCAG 1.4.11. */
+  --border: hsl(0 0% 14.9%); /* #262626 */
+  --input: hsl(0 0% 14.9%);
+  --ring: hsl(0 0% 83.1%); /* #D4D4D4 · 13.36:1 on bg */
+
+  --radius: 0.75rem;
+
+  /* ── Elevation ──────────────────────────────────────────────────────── */
+  --surface-1: #0a0a0a; /* page                                    */
+  --surface-2: #0f0f0f; /* card, sticky group headers              */
+  --surface-3: #161616; /* popover, dropdown, hover on card        */
+  --surface-4: #1f1f1f; /* pressed, selected row, switch-off track */
+
+  /* ── Borders ────────────────────────────────────────────────────────── */
+  --border-strong: #636363; /* 3.30:1 ✅ — any border that IS the control */
+  --border-subtle: #1a1a1a; /* 1.14:1    — hairlines inside a card        */
+
+  /* ── Status ─────────────────────────────────────────────────────────── */
+  --success: #34d399; /* 10.30:1 */
+  --success-bg: color-mix(in oklab, #34d399 14%, transparent);
+  --warning: #fbbf24; /* 11.85:1 */
+  --warning-bg: color-mix(in oklab, #fbbf24 14%, transparent);
+  --danger: #f87171; /*  7.16:1 */
+  --danger-bg: color-mix(in oklab, #f87171 14%, transparent);
+  --info: #60a5fa; /*  7.79:1 */
+  --info-bg: color-mix(in oklab, #60a5fa 14%, transparent);
+
+  /* ── Currency accents ─────────────────────────────────────────────────
+     RULE: these tint the small currency chip / input adornment ONLY.
+     Price NUMBERS render in --foreground or --primary. Three hues in a
+     scannable price column is unreadable. ─────────────────────────────── */
+  --ars: #74acdf; /* celeste ·  8.21:1 */
+  --usd: #7be0ad; /*           12.36:1 */
+  --sat: #f7931a; /* bitcoin ·  8.61:1 */
+
+  /* ── Brand texture ──────────────────────────────────────────────────── */
+  --grid-line: color-mix(in oklab, #b4f953 10%, transparent);
+  --grid-size: 40px;
+
+  /* ── Sidebar (shadcn contract) ──────────────────────────────────────── */
+  --sidebar: hsl(0 0% 3.9%);
+  --sidebar-foreground: hsl(0 0% 98%);
+  --sidebar-primary: hsl(85 93% 65%);
+  --sidebar-primary-foreground: hsl(0 0% 9%);
+  --sidebar-accent: hsl(0 0% 14.9%);
+  --sidebar-accent-foreground: hsl(0 0% 98%);
+  --sidebar-border: hsl(0 0% 14.9%);
+  --sidebar-ring: hsl(0 0% 83.1%);
+
+  /* ── Charts (unused today; kept so shadcn components resolve) ───────── */
+  --chart-1: #b4f953;
+  --chart-2: #74acdf;
+  --chart-3: #f7931a;
+  --chart-4: #7be0ad;
+  --chart-5: #a3a3a3;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   2. @theme inline — map custom properties into Tailwind's namespaces.
+      `inline` emits utilities referencing var(--x) rather than snapshotting
+      the value, so runtime overrides still work.
+   ═══════════════════════════════════════════════════════════════════════ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-4: var(--surface-4);
+
+  --color-border-strong: var(--border-strong);
+  --color-border-subtle: var(--border-subtle);
+
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+
+  --color-ars: var(--ars);
+  --color-usd: var(--usd);
+  --color-sat: var(--sat);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* Current shadcn v4 multiplier form — NOT the legacy calc(--radius - 4px). */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --font-sans: var(--font-standerd), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-heading: var(--font-standerd), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas,
+    "Liberation Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ═══════════════════════════════════════════════════════════════════════
+   3. @theme — static tokens (no var() indirection).
+   ═══════════════════════════════════════════════════════════════════════ */
+@theme {
+  /* ── Type scale ───────────────────────────────────────────────────────
+     Brand rule from lacrypta.ar: headings use line-height EQUAL to
+     font-size. Consequence: heading blocks carry zero leading, so they
+     need explicit margin and negative tracking or descenders collide. ─── */
+  --text-hero: clamp(3rem, 11vw, 8rem);
+  --text-hero--line-height: 1;
+  --text-hero--letter-spacing: -0.035em;
+  --text-hero--font-weight: 700;
+
+  --text-display: clamp(2.25rem, 6vw, 4rem);
+  --text-display--line-height: 1;
+  --text-display--letter-spacing: -0.03em;
+  --text-display--font-weight: 700;
+
+  --text-h1: 2rem;
+  --text-h1--line-height: 1;
+  --text-h1--letter-spacing: -0.025em;
+  --text-h1--font-weight: 700;
+
+  --text-h2: 1.5rem;
+  --text-h2--line-height: 1;
+  --text-h2--letter-spacing: -0.02em;
+  --text-h2--font-weight: 700;
+
+  --text-h3: 1.25rem;
+  --text-h3--line-height: 1.1;
+  --text-h3--letter-spacing: -0.015em;
+  --text-h3--font-weight: 600;
+
+  --text-price: 1.25rem;
+  --text-price--line-height: 1;
+  --text-price--font-weight: 700;
+
+  --text-price-lg: 1.75rem;
+  --text-price-lg--line-height: 1;
+  --text-price-lg--font-weight: 700;
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  --container-app: 90rem; /* 1440px — main content cap     */
+  --container-form: 35rem; /*  560px — product form column  */
+  --container-panel: 45rem; /*  720px — settings, categories */
+
+  --breakpoint-xs: 22.5rem; /* 360px — iPhone SE floor */
+
+  --ease-brand: cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-queue-pulse: queue-pulse 1.6s var(--ease-brand) infinite;
+  --animate-ring-flash: ring-flash 1.2s var(--ease-brand) 1;
+}
+
+@keyframes queue-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes ring-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-primary) 70%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px color-mix(in oklab, var(--color-primary) 0%, transparent);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4. Custom utilities
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Flat lime grid. Behind empty states, login modal, storefront header.
+   Apply to an absolutely-positioned pointer-events-none child, NEVER to a
+   container that holds text. */
+@utility grid-flat {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  -webkit-mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    #000 10%,
+    transparent 75%
+  );
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 10%, transparent 75%);
+}
+
+/* Perspective horizon grid — the hero texture from lacrypta.ar.
+   Public landing only. Flattened under prefers-reduced-motion (§6). */
+@utility grid-horizon {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  transform: perspective(320px) rotateX(62deg);
+  transform-origin: 50% 100%;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 40%,
+    transparent 95%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 40%, transparent 95%);
+}
+
+/* Lime bloom under the primary CTA on hover. */
+@utility glow-primary {
+  box-shadow: 0 8px 32px -12px color-mix(in oklab, var(--color-primary) 55%, transparent);
+}
+
+/* Tabular figures. MANDATORY on every price, stock count, relay counter,
+   latency reading and the ticker chip — otherwise digits jitter on update. */
+@utility numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* iOS home-indicator clearance for bottom bars. */
+@utility safe-b {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Inset focus ring for the rare case of a focusable element sitting ON a
+   lime surface, where the default #D4D4D4 ring is 1.17:1 and invisible.
+   --primary-foreground is 14.15:1 against lime. */
+@utility focus-ring-inverse {
+  &:focus-visible {
+    outline: 2px solid var(--color-primary-foreground);
+    outline-offset: -3px;
+  }
+}
+
+/* Expanded hit area for a visually-small control (row menus, thumb delete,
+   crop +/-). Keeps the 44px WCAG 2.5.8 target without a bigger box. */
+@utility tap-44 {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    min-width: 44px;
+    min-height: 44px;
+    width: 100%;
+    height: 100%;
+    translate: -50% -50%;
+  }
+}
+
+/* Middle-truncate long monospace strings (npub, wss:// URLs). */
+@utility truncate-middle {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   5. Base layer
+   ═══════════════════════════════════════════════════════════════════════ */
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply font-sans;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+    /* Standerd ships 400/500/600/700 only. Block synthetic bold so a stray
+       font-black doesn't render a smeared fake weight. */
+    font-synthesis-weight: none;
+  }
+
+  /* ONE global focus treatment. The 2px OFFSET is load-bearing: it puts the
+     light ring on the page background (13.36:1) instead of on top of a lime
+     button, where #D4D4D4 would be 1.17:1 and effectively invisible.
+     Corollary: never place a lime primary button on a lime/light surface —
+     use .focus-ring-inverse there. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: inherit;
+  }
+
+  ::selection {
+    background-color: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
+
+  /* Chrome's autofill yellow is catastrophic on #0A0A0A. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--color-foreground);
+    box-shadow: 0 0 0 1000px var(--color-surface-2) inset;
+    caret-color: var(--color-foreground);
+    transition: background-color 9999s ease-out;
+  }
+
+  /* Dark scrollbars that don't scream. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-surface-4) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-surface-4);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  /* Anchor targets sit below the sticky topbar. */
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   6. Reduced motion
+   ═══════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* A large skewed moving texture is a vestibular trigger — flatten it. */
+  .grid-horizon {
+    transform: none;
+    opacity: 0.5;
+  }
 }
