@@ -76,9 +76,14 @@ export function formatAmount(price: Price): string {
 }
 
 /**
- * Display formatting, mirroring lawalletio/mobile-pos and menu-lacrypta:
- * ARS -> `$1.234`, USD -> `US$1.234`, SAT -> `1.234 sat`.
+ * Display formatting: `ARS 1.234`, `USD 1.234`, `1.234 sat`.
  * Anything else falls back to `1.234,00 EUR`.
+ *
+ * Deliberately NOT the bare `$` that lawalletio/mobile-pos and menu-lacrypta
+ * use for ARS. A catalog can price in both ARS and USD at once, and `$` reads
+ * as either depending on who is looking — a price that is ambiguous by a
+ * factor of ~1000 is worse than one that is two characters longer. Sats keep
+ * the suffix form, which is the universal nostr convention.
  *
  * NOTE: never use the ₿ sign — the Standerd typeface has no glyph for U+20BF.
  */
@@ -92,9 +97,9 @@ export function formatPrice(amount: number, currency: string): string {
     case "SAT":
       return `${n} sat`
     case "USD":
-      return `US$${n}`
+      return `USD ${n}`
     case "ARS":
-      return `$${n}`
+      return `ARS ${n}`
     default:
       return `${n} ${currency}`
   }

@@ -37,14 +37,13 @@ const CURRENCIES = [
 
 type Currency = (typeof CURRENCIES)[number]["value"]
 
-/** es-AR price formatting, mirroring lawalletio/mobile-pos + menu-lacrypta. */
+/** Mirrors src/lib/domain/price.ts — currency codes, never a bare `$`. */
 function formatPrice(value: number, currency: Currency): string {
   const n = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(
     value
   )
   if (currency === "SAT") return `${n} sat`
-  if (currency === "USD") return `US$${n}`
-  return `$${n}`
+  return `${currency} ${n}`
 }
 
 export function CurrencyPreview() {
