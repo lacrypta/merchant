@@ -3,25 +3,22 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
-import { cn } from "@/lib/utils"
-import { Logo } from "@/components/brand/logo"
 import { NAV_ITEMS } from "@/components/shell/nav-items"
+import { cn } from "@/lib/utils"
 
+/**
+ * Desktop navigation.
+ *
+ * Carries no logo: the shared <SiteNavbar> above owns the brand mark in every
+ * context, so repeating it here would show it twice on desktop. `top-16`
+ * parks the sticky column right under that navbar.
+ */
 export function AppSidebar() {
   const pathname = usePathname()
 
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[264px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex">
-      <div className="flex h-16 items-center px-5">
-        <Link
-          href="/products"
-          className="rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        >
-          <Logo />
-        </Link>
-      </div>
-
-      <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Principal">
+    <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-[240px] shrink-0 flex-col border-r border-border py-4 pl-4 lg:flex">
+      <nav className="flex-1 space-y-1 pr-4" aria-label="Secciones">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active = pathname === href || pathname.startsWith(`${href}/`)
           return (

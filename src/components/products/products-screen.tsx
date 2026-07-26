@@ -6,6 +6,7 @@ import Link from "next/link"
 import { useAuth } from "@/components/auth/auth-provider"
 import { useCatalog } from "@/components/catalog/catalog-provider"
 import { CategoryDialog } from "@/components/categories/category-dialog"
+import { ProductDialog } from "@/components/products/product-dialog"
 import { DeleteCategoryDialog } from "@/components/categories/delete-category-dialog"
 import { EmptyState } from "@/components/feedback/empty-state"
 import {
@@ -56,6 +57,14 @@ export function ProductsScreen() {
     null
   )
   const [productToDelete, setProductToDelete] = React.useState<Product | null>(
+    null
+  )
+  // undefined = closed. null = create. Product = edit that one.
+  const [productInDialog, setProductInDialog] = React.useState<
+    Product | null | undefined
+  >(undefined)
+  /** Category preselected when creating from an empty group. */
+  const [createInCategory, setCreateInCategory] = React.useState<string | null>(
     null
   )
 
@@ -112,17 +121,37 @@ export function ProductsScreen() {
   const actions = (
     <div className="flex flex-wrap gap-2">
       <AddCategoryButton onClick={() => setCreatingCategory(true)} />
-      <Button asChild>
-        <Link href="/products/new">Nuevo producto</Link>
+      <Button
+        onClick={() => {
+          setCreateInCategory(null)
+          setProductInDialog(null)
+        }}
+      >
+        Nuevo producto
       </Button>
     </div>
   )
 
+  /**
+   * Move a product to another category.
+   *
+   * A real MOVE: the product leaves the group it was in. Prepending the new
+   * slug and keeping the old one would leave the product still tagged with a
+   * category it visibly left, and it would silently reappear there the moment
+   * the new one was deleted.
+   *
+   * Belonging to several categories at once is still supported — that is what
+   * the chips in the edit form are for. Dragging is unambiguous.
+   */
   function handleMoveProduct(p: Product, toSlug: string | null) {
-    // Replace the primary category, keeping any others the product carries.
-    const rest = p.categories.filter((s) => s !== toSlug)
-    const next = toSlug ? [toSlug, ...rest.slice(0, 3)] : []
-    saveProduct({ ...p, categories: next })
+    const known = new Set(categories.map((c) => c.slug))
+    // Preserve any tags that aren't categories we manage, so a third-party
+    // client's topic tags survive the move.
+    const foreign = p.categories.filter((s) => !known.has(s))
+    saveProduct({
+      ...p,
+      categories: toSlug ? [toSlug, ...foreign] : foreign,
+    })
   }
 
   function handleReorderCategories(orderedDs: string[]) {
@@ -170,8 +199,14 @@ export function ProductsScreen() {
               <Button onClick={() => setCreatingCategory(true)}>
                 Crear categoría
               </Button>
-              <Button variant="outline" asChild>
-                <Link href="/products/new">Crear producto</Link>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setCreateInCategory(null)
+                  setProductInDialog(null)
+                }}
+              >
+                Crear producto
               </Button>
             </div>
           }
@@ -210,6 +245,14 @@ export function ProductsScreen() {
           ) : (
             <CatalogBoard
               groups={groups}
+              onEditProduct={(p) => {
+                setCreateInCategory(null)
+                setProductInDialog(p)
+              }}
+              onCreateProduct={(slug) => {
+                setCreateInCategory(slug)
+                setProductInDialog(null)
+              }}
               onEditCategory={setEditingCategory}
               onDeleteCategory={setCategoryToDelete}
               onDeleteProduct={setProductToDelete}
@@ -220,6 +263,13 @@ export function ProductsScreen() {
           )}
         </>
       )}
+
+      <ProductDialog
+        open={productInDialog !== undefined}
+        existing={productInDialog ?? undefined}
+        defaultCategory={createInCategory}
+        onOpenChange={(o) => !o && setProductInDialog(undefined)}
+      />
 
       <CategoryDialog
         open={creatingCategory || editingCategory !== null}

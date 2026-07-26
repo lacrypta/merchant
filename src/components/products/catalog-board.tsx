@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import {
   DndContext,
   DragOverlay,
@@ -9,10 +8,14 @@ import {
   PointerSensor,
   TouchSensor,
   closestCorners,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core"
 import {
@@ -23,13 +26,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import {
-  GripVertical,
-  MoreVertical,
-  Pencil,
-  Plus,
-  Trash2,
-} from "lucide-react"
+import { GripVertical, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
 import { Badge } from "@/components/ui/badge"
@@ -47,36 +44,56 @@ import type { Product } from "@/lib/domain/product"
 import { cn } from "@/lib/utils"
 
 export interface Group {
-  /** null = the "Sin categoría" bucket, which is never draggable. */
+  /** null = the "Sin categoría" bucket. */
   category: Category | null
   products: Product[]
 }
 
+/** Stable container key for a group. */
+const LOOSE = "__uncategorised"
+const keyOf = (g: Group) => g.category?.d ?? LOOSE
+/** Droppable id for a container. Prefixed so it can never collide with a uuid. */
+const zoneOf = (key: string) => `zone:${key}`
+
 /**
  * The catalog board: categories as sections, products nested inside.
  *
- * ONE DndContext drives three kinds of drag, routed by what was picked up:
- *  - a category reorders among categories  -> rewrites each `order` tag
- *  - a product reorders inside its group   -> rewrites that category's `a` list
- *  - a product dropped on another group    -> rewrites the product's `t` tags
+ * Standard dnd-kit multi-container setup. Three gestures, one DndContext:
+ *  - drag a category   -> reorder categories, rewrites each `order` tag
+ *  - drag a product    -> reorder inside its group, rewrites the `a` list
+ *  - drop it elsewhere -> reparent, rewrites the product's `t` tags
  *
- * Nesting a second DndContext for products was tried and is broken: the outer
- * context captures the keyboard sensor and only knows category ids, so lifting
- * a product announced it as dropped on itself.
+ * Two mistakes that cost real debugging time and are worth not repeating:
  *
- * Empty categories are explicit droppables — otherwise there is no row to
- * collide with and a product could never be dragged into an empty group.
+ * 1. A second `useDroppable` was registered on the SAME <section> node that
+ *    `useSortable` already owns. useSortable is itself a draggable + droppable,
+ *    so two registrations fought over one element and drags cancelled on
+ *    pickup. The container droppable now lives on the inner <ul>, a node
+ *    nothing else claims.
+ *
+ * 2. Nesting a second DndContext for products: the outer context captured the
+ *    keyboard sensor and only knew category ids, so lifting a product
+ *    announced it as dropped on itself.
+ *
+ * `containers` is local state so a row visibly follows the cursor across
+ * section boundaries during the gesture; it re-syncs from props whenever the
+ * catalog changes and no drag is in progress.
  */
 export function CatalogBoard({
   groups,
   onEditCategory,
   onDeleteCategory,
   onDeleteProduct,
+  onEditProduct,
+  onCreateProduct,
   onMoveProduct,
   onReorderCategories,
   onReorderProducts,
 }: {
   groups: Group[]
+  onEditProduct: (p: Product) => void
+  /** Create a product already assigned to this category (null = loose). */
+  onCreateProduct: (slug: string | null) => void
   onEditCategory: (c: Category) => void
   onDeleteCategory: (c: Category) => void
   onDeleteProduct: (p: Product) => void
@@ -85,103 +102,169 @@ export function CatalogBoard({
   onReorderProducts: (category: Category, orderedDs: string[]) => void
 }) {
   const { categories, pending } = useCatalog()
-  const [draggingId, setDraggingId] = React.useState<string | null>(null)
+
+  const [activeId, setActiveId] = React.useState<string | null>(null)
+  /** containerKey -> ordered product d-tags */
+  const [containers, setContainers] = React.useState<Record<string, string[]>>(
+    () => Object.fromEntries(groups.map((g) => [keyOf(g), g.products.map((p) => p.d)]))
+  )
+  /** Where the dragged product started, so we know if it actually moved. */
+  const originRef = React.useRef<string | null>(null)
+
+  const fromProps = React.useMemo(
+    () => Object.fromEntries(groups.map((g) => [keyOf(g), g.products.map((p) => p.d)])),
+    [groups]
+  )
+
+  /**
+   * Re-sync from props, but never mid-gesture — that would yank the row back
+   * under the cursor.
+   *
+   * Adjusted DURING RENDER rather than in an effect. This is React's
+   * documented pattern for state derived from props: an effect would paint
+   * the stale list first and then cascade a second render.
+   */
+  const [syncedFrom, setSyncedFrom] = React.useState(fromProps)
+  if (!activeId && syncedFrom !== fromProps) {
+    setSyncedFrom(fromProps)
+    setContainers(fromProps)
+  }
+
+  const productById = React.useMemo(() => {
+    const m = new Map<string, Product>()
+    for (const g of groups) for (const p of g.products) m.set(p.d, p)
+    return m
+  }, [groups])
+
+  const groupByKey = React.useMemo(() => {
+    const m = new Map<string, Group>()
+    for (const g of groups) m.set(keyOf(g), g)
+    return m
+  }, [groups])
+
+  const categoryIds = groups.filter((g) => g.category).map((g) => g.category!.d)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     // The delay is what keeps a scroll gesture from becoming a drag on touch.
-    useSensor(TouchSensor, {
-      activationConstraint: { delay: 180, tolerance: 6 },
-    }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const categoryIds = groups
-    .filter((g) => g.category)
-    .map((g) => g.category!.d)
+  /**
+   * Prefer whatever is directly under the pointer; fall back to rect overlap
+   * and then to corner distance. Plain closestCenter picks the section the
+   * pointer has already left when lists have very different heights.
+   */
+  const collisionDetection: CollisionDetection = React.useCallback((args) => {
+    const pointer = pointerWithin(args)
+    if (pointer.length > 0) return pointer
+    const intersections = rectIntersection(args)
+    if (intersections.length > 0) return intersections
+    return closestCorners(args)
+  }, [])
 
-  /** Droppable id for a whole section, used when the group is empty. */
-  const zoneId = (g: Group) => `zone:${g.category?.d ?? "__uncategorised"}`
-
-  /** Which group does this draggable/droppable id belong to? */
-  function groupOf(id: string): Group | undefined {
-    if (id.startsWith("zone:")) {
-      const key = id.slice(5)
-      return groups.find((g) => (g.category?.d ?? "__uncategorised") === key)
-    }
-    const byCategory = groups.find((g) => g.category?.d === id)
-    if (byCategory) return byCategory
-    return groups.find((g) => g.products.some((p) => p.d === id))
+  /** Which container currently holds this id (or is this id a container?). */
+  function findContainer(id: string): string | undefined {
+    if (id.startsWith("zone:")) return id.slice(5)
+    if (containers[id]) return id
+    return Object.keys(containers).find((k) => containers[k]!.includes(id))
   }
 
-  /**
-   * ONE DndContext for the whole board.
-   *
-   * Nesting a product DndContext inside a category one looked tidier but was
-   * broken: the outer context captured the keyboard sensor and only knew
-   * category ids, so lifting a product announced it as dropped on itself and
-   * never moved. A single context with per-list SortableContexts keeps the
-   * two axes independent while letting one handler route the drag.
-   */
-  function handleDragEnd(e: DragEndEvent) {
-    setDraggingId(null)
+  function handleDragStart(e: DragStartEvent) {
+    const id = String(e.active.id)
+    setActiveId(id)
+    originRef.current = categoryIds.includes(id) ? null : (findContainer(id) ?? null)
+  }
+
+  /** Move the row between containers live, so the drop target is obvious. */
+  function handleDragOver(e: DragOverEvent) {
     const { active, over } = e
     if (!over) return
+    const activeKey = String(active.id)
+    if (categoryIds.includes(activeKey)) return // categories don't reparent
 
-    const activeId = String(active.id)
-    const overId = String(over.id)
-    if (activeId === overId) return
+    const from = findContainer(activeKey)
+    const to = findContainer(String(over.id))
+    if (!from || !to || from === to) return
+
+    setContainers((prev) => {
+      const source = prev[from] ?? []
+      const target = prev[to] ?? []
+      if (!source.includes(activeKey)) return prev
+
+      const overId = String(over.id)
+      const overIndex = target.indexOf(overId)
+      const insertAt = overIndex >= 0 ? overIndex : target.length
+
+      return {
+        ...prev,
+        [from]: source.filter((x) => x !== activeKey),
+        [to]: [...target.slice(0, insertAt), activeKey, ...target.slice(insertAt)],
+      }
+    })
+  }
+
+  function handleDragEnd(e: DragEndEvent) {
+    const { active, over } = e
+    const activeKey = String(active.id)
+    const origin = originRef.current
+    setActiveId(null)
+    originRef.current = null
+
+    if (!over) return
 
     // 1. Category reorder.
-    if (categoryIds.includes(activeId)) {
-      const from = categoryIds.indexOf(activeId)
-      const to = categoryIds.indexOf(overId)
-      if (from < 0 || to < 0) return
+    if (categoryIds.includes(activeKey)) {
+      const overKey = String(over.id)
+      const from = categoryIds.indexOf(activeKey)
+      const to = categoryIds.indexOf(overKey)
+      if (from < 0 || to < 0 || from === to) return
       onReorderCategories(arrayMove(categoryIds, from, to))
       return
     }
 
-    const source = groups.find((g) => g.products.some((p) => p.d === activeId))
-    if (!source) return
-    const target = groupOf(overId)
-    if (!target) return
+    const target = findContainer(String(over.id))
+    if (!target || !origin) return
 
-    // 2. Same group -> reorder within it.
-    if (target === source) {
-      if (!source.category) return // the "Sin categoría" bucket has no order
-      const ids = source.products.map((p) => p.d)
-      const from = ids.indexOf(activeId)
-      const to = ids.indexOf(overId)
-      if (from < 0 || to < 0) return
-      onReorderProducts(source.category, arrayMove(ids, from, to))
+    const product = productById.get(activeKey)
+    if (!product) return
+
+    // 2. Reparented into another category.
+    if (target !== origin) {
+      const group = groupByKey.get(target)
+      onMoveProduct(product, group?.category?.slug ?? null)
       return
     }
 
-    // 3. Different group -> reparent. One signature: only the product's own
-    // `t` tags change, because `t` is authoritative for membership. The
-    // category `a` lists are ordering hints and get repaired on the next save.
-    const product = source.products.find((p) => p.d === activeId)
-    if (product) onMoveProduct(product, target.category?.slug ?? null)
+    // 3. Same container — commit the new order, if it changed.
+    const group = groupByKey.get(target)
+    if (!group?.category) return // the loose bucket has no order to persist
+
+    const current = containers[target] ?? []
+    const overIndex = current.indexOf(String(over.id))
+    const activeIndex = current.indexOf(activeKey)
+    if (activeIndex < 0 || overIndex < 0 || activeIndex === overIndex) return
+
+    onReorderProducts(group.category, arrayMove(current, activeIndex, overIndex))
   }
 
-  const draggingProduct = draggingId
-    ? groups.flatMap((g) => g.products).find((p) => p.d === draggingId)
+  const draggingProduct = activeId ? productById.get(activeId) : undefined
+  const draggingCategory = activeId
+    ? groups.find((g) => g.category?.d === activeId)?.category
     : undefined
-  const draggingCategory = draggingId
-    ? groups.find((g) => g.category?.d === draggingId)?.category
-    : undefined
-
 
   return (
     <DndContext
       sensors={sensors}
-      // closestCorners, not closestCenter: with nested lists of differing
-      // heights, centre-distance frequently picks the section the pointer has
-      // already left. No axis modifier either — dragging between groups is a
-      // two-dimensional gesture.
-      collisionDetection={closestCorners}
-      onDragStart={(e: DragStartEvent) => setDraggingId(String(e.active.id))}
-      onDragCancel={() => setDraggingId(null)}
+      collisionDetection={collisionDetection}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragCancel={() => {
+        setActiveId(null)
+        originRef.current = null
+        setContainers(fromProps)
+      }}
       onDragEnd={handleDragEnd}
       accessibility={{
         announcements: {
@@ -196,29 +279,45 @@ export function CatalogBoard({
     >
       <SortableContext items={categoryIds} strategy={verticalListSortingStrategy}>
         <div className="space-y-8">
-          {groups.map((group) => (
-            <CategorySection
-              key={group.category?.d ?? "__uncategorised"}
-              group={group}
-              allCategories={categories}
-              busy={group.category ? pending.has(group.category.d) : false}
-              onEditCategory={onEditCategory}
-              onDeleteCategory={onDeleteCategory}
-              onDeleteProduct={onDeleteProduct}
-              onMoveProduct={onMoveProduct}
-              zoneId={zoneId(group)}
-            />
-          ))}
+          {groups.map((group) => {
+            const key = keyOf(group)
+            const ids = containers[key] ?? []
+            return (
+              <CategorySection
+                key={key}
+                group={group}
+                containerKey={key}
+                productIds={ids}
+                productById={productById}
+                allCategories={categories}
+                busy={group.category ? pending.has(group.category.d) : false}
+                onEditCategory={onEditCategory}
+                onDeleteCategory={onDeleteCategory}
+                onDeleteProduct={onDeleteProduct}
+                onEditProduct={onEditProduct}
+                onCreateProduct={onCreateProduct}
+                onMoveProduct={onMoveProduct}
+              />
+            )
+          })}
         </div>
       </SortableContext>
 
-      {/* Overlay follows the cursor across section boundaries; without it the
-          row stays clipped inside its original list while dragging out. */}
+      {/* The travelling copy. Without it the row stays clipped inside its
+          original list and cannot be seen crossing into another section. */}
       <DragOverlay dropAnimation={null}>
         {draggingProduct ? (
           <div className="flex items-center gap-3 rounded-xl border border-primary/50 bg-card p-3 shadow-2xl">
             <GripVertical className="size-4 text-muted-foreground" aria-hidden />
             <span className="font-semibold">{draggingProduct.title}</span>
+            {draggingProduct.price ? (
+              <span className="numeric ml-auto font-semibold text-primary">
+                {formatPrice(
+                  draggingProduct.price.amount,
+                  draggingProduct.price.currency
+                )}
+              </span>
+            ) : null}
           </div>
         ) : draggingCategory ? (
           <div className="rounded-2xl border border-primary/50 bg-surface-2 px-4 py-3 shadow-2xl">
@@ -235,6 +334,10 @@ export function CatalogBoard({
 
 function labelOf(id: string | number, groups: Group[]): string {
   const key = String(id)
+  if (key.startsWith("zone:")) {
+    const g = groups.find((x) => keyOf(x) === key.slice(5))
+    return g?.category ? `la categoría ${g.category.name}` : "Sin categoría"
+  }
   const category = groups.find((g) => g.category?.d === key)?.category
   if (category) return `la categoría ${category.name}`
   for (const g of groups) {
@@ -246,69 +349,54 @@ function labelOf(id: string | number, groups: Group[]): string {
 
 function CategorySection({
   group,
+  containerKey,
+  productIds,
+  productById,
   allCategories,
   busy,
   onEditCategory,
   onDeleteCategory,
   onDeleteProduct,
+  onEditProduct,
+  onCreateProduct,
   onMoveProduct,
-  zoneId,
 }: {
   group: Group
+  containerKey: string
+  productIds: string[]
+  productById: Map<string, Product>
   allCategories: Category[]
   busy: boolean
-  zoneId: string
   onEditCategory: (c: Category) => void
   onDeleteCategory: (c: Category) => void
   onDeleteProduct: (p: Product) => void
+  onEditProduct: (p: Product) => void
+  onCreateProduct: (slug: string | null) => void
   onMoveProduct: (p: Product, toSlug: string | null) => void
 }) {
   const category = group.category
+
+  // The SECTION is the sortable (categories reorder). Nothing else may claim
+  // this node — see the note at the top of the file.
   const sortable = useSortable({
-    id: category?.d ?? "__uncategorised",
+    id: category?.d ?? LOOSE,
     disabled: !category,
   })
 
-  const style = category
-    ? {
-        transform: CSS.Transform.toString(sortable.transform),
-        transition: sortable.transition,
-      }
-    : undefined
-
-  const productIds = group.products.map((p) => p.d)
-
-  // A section-wide droppable so a product can be dropped into a group that has
-  // no rows to collide with. `isOver` also gives the whole section a target
-  // highlight, which is the only affordance telling you the drop will land.
-  const drop = useDroppable({ id: zoneId })
-
-  /**
-   * The section is BOTH a sortable (categories reorder) and a droppable
-   * (products land in it), so two refs share one node.
-   *
-   * This MUST be memoised. An inline arrow is a new function every render, so
-   * React detaches it with null and re-attaches on each re-render — and since
-   * drag start sets state, dnd-kit saw its draggable node vanish mid-gesture
-   * and cancelled the drag immediately. dnd-kit's setNodeRef identities are
-   * stable, so this callback is created once.
-   */
-  const setSectionRef = React.useCallback(
-    (node: HTMLElement | null) => {
-      if (category) sortable.setNodeRef(node)
-      drop.setNodeRef(node)
-    },
-    [category, sortable.setNodeRef, drop.setNodeRef]
-  )
+  // The LIST is the container droppable, on a separate node.
+  const drop = useDroppable({ id: zoneOf(containerKey) })
 
   return (
     <section
-      ref={setSectionRef}
-      style={style}
+      ref={sortable.setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(sortable.transform),
+        transition: sortable.transition,
+      }}
       className={cn(
         "rounded-2xl border bg-surface-2/40 p-3 transition-colors sm:p-4",
         drop.isOver ? "border-primary bg-primary/5" : "border-border",
-        sortable.isDragging && "z-10 opacity-80 shadow-2xl",
+        sortable.isDragging && "opacity-40",
         busy && "opacity-60"
       )}
     >
@@ -335,9 +423,25 @@ function CategorySection({
           ) : null}
           {category?.name ?? "Sin categoría"}
           <span className="numeric ml-2 text-sm font-medium text-muted-foreground">
-            {group.products.length}
+            {productIds.length}
           </span>
         </h2>
+
+        {/* Present on every group, including the loose bucket: adding a
+            product to the section you are already looking at should not
+            require the toolbar and then picking the category again. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="shrink-0"
+          onClick={() => onCreateProduct(category?.slug ?? null)}
+        >
+          <Plus className="size-4" aria-hidden />
+          <span className="hidden sm:inline">Agregar producto</span>
+          <span className="sr-only sm:hidden">
+            Agregar producto a {category?.name ?? "Sin categoría"}
+          </span>
+        </Button>
 
         {category ? (
           <DropdownMenu>
@@ -369,34 +473,59 @@ function CategorySection({
         ) : null}
       </header>
 
-      {group.products.length === 0 ? (
-        <p
+      <SortableContext items={productIds} strategy={verticalListSortingStrategy}>
+        <ul
+          ref={drop.setNodeRef}
+          // min-height keeps an empty group a real drop target instead of a
+          // zero-height line the pointer can never land on.
           className={cn(
-            "rounded-lg border border-dashed px-3 py-6 text-center text-sm transition-colors",
-            drop.isOver
-              ? "border-primary text-primary"
-              : "border-border text-muted-foreground"
+            "space-y-2 rounded-lg",
+            productIds.length === 0 &&
+              "grid min-h-20 place-items-center border border-dashed px-3 text-sm transition-colors",
+            productIds.length === 0 &&
+              (drop.isOver
+                ? "border-primary text-primary"
+                : "border-border text-muted-foreground")
           )}
         >
-          {drop.isOver ? "Soltá acá" : "Vacía. Arrastrá un producto acá."}
-        </p>
-      ) : (
-        <SortableContext items={productIds} strategy={verticalListSortingStrategy}>
-            <ul className="space-y-2">
-              {group.products.map((p) => (
+          {productIds.length === 0 ? (
+            <li className="flex list-none flex-wrap items-center justify-center gap-x-1.5 gap-y-2 py-1">
+              {drop.isOver ? (
+                "Soltá acá"
+              ) : (
+                <>
+                  <span>Vacía. Arrastrá un producto acá</span>
+                  <span aria-hidden>o</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onCreateProduct(category?.slug ?? null)}
+                  >
+                    <Plus className="size-4" aria-hidden />
+                    Crear uno
+                  </Button>
+                </>
+              )}
+            </li>
+          ) : (
+            productIds.map((id) => {
+              const product = productById.get(id)
+              if (!product) return null
+              return (
                 <ProductRow
-                  key={p.d}
-                  product={p}
+                  key={id}
+                  product={product}
                   categories={allCategories}
                   currentSlug={category?.slug ?? null}
-                  sortable={!!category}
-                  onDelete={() => onDeleteProduct(p)}
-                  onMove={(slug) => onMoveProduct(p, slug)}
+                  onDelete={() => onDeleteProduct(product)}
+                  onEdit={() => onEditProduct(product)}
+                  onMove={(slug) => onMoveProduct(product, slug)}
                 />
-              ))}
-          </ul>
-        </SortableContext>
-      )}
+              )
+            })
+          )}
+        </ul>
+      </SortableContext>
     </section>
   )
 }
@@ -405,20 +534,20 @@ function ProductRow({
   product,
   categories,
   currentSlug,
-  sortable: canSort,
   onDelete,
+  onEdit,
   onMove,
 }: {
   product: Product
   categories: Category[]
   currentSlug: string | null
-  sortable: boolean
   onDelete: () => void
+  onEdit: () => void
   onMove: (slug: string | null) => void
 }) {
   const { pending } = useCatalog()
   const busy = pending.has(product.d)
-  const s = useSortable({ id: product.d, disabled: !canSort || busy })
+  const s = useSortable({ id: product.d, disabled: busy })
   const thumb = product.images[0]
 
   return (
@@ -436,19 +565,16 @@ function ProductRow({
         busy && "opacity-60"
       )}
     >
-      {canSort ? (
-        <button
-          type="button"
-          className="tap-44 shrink-0 cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring active:cursor-grabbing"
-          aria-label={`Reordenar ${product.title}`}
-          {...s.attributes}
-          {...s.listeners}
-        >
-          <GripVertical className="size-4" aria-hidden />
-        </button>
-      ) : (
-        <span className="size-4 shrink-0" aria-hidden />
-      )}
+      <button
+        type="button"
+        className="tap-44 shrink-0 cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring active:cursor-grabbing"
+        aria-label={`Reordenar ${product.title}`}
+        disabled={busy}
+        {...s.attributes}
+        {...s.listeners}
+      >
+        <GripVertical className="size-4" aria-hidden />
+      </button>
 
       <div className="size-12 shrink-0 overflow-hidden rounded-lg bg-surface-3">
         {thumb ? (
@@ -502,11 +628,9 @@ function ProductRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuItem asChild>
-            <Link href={`/products/${product.d}/edit`}>
-              <Pencil className="size-4" aria-hidden />
-              Editar
-            </Link>
+          <DropdownMenuItem onSelect={onEdit}>
+            <Pencil className="size-4" aria-hidden />
+            Editar
           </DropdownMenuItem>
 
           <DropdownMenuSeparator />

@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import { ClipboardPaste, Puzzle, QrCode } from "lucide-react"
 
 import { useAuth } from "@/components/auth/auth-provider"
@@ -18,16 +17,20 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { NostrConnectHandle } from "@/lib/nostr/backend"
 
+/**
+ * Login dialog. Deliberately owns NO navigation.
+ *
+ * Its parent swaps branches the moment auth flips to `ready`, which unmounts
+ * this component — so a redirect effect living here would never fire. The
+ * caller decides where to go (see AccountMenu).
+ */
 export function LoginDialog({
   open,
   onOpenChange,
-  redirectTo = "/products",
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  redirectTo?: string
 }) {
-  const router = useRouter()
   const {
     state,
     extensionAvailable,
@@ -42,13 +45,6 @@ export function LoginDialog({
   const [qr, setQr] = React.useState<NostrConnectHandle | null>(null)
   const busy = state.status === "connecting"
 
-  // Leave the dialog and land on the dashboard once we're authenticated.
-  React.useEffect(() => {
-    if (open && state.status === "ready") {
-      onOpenChange(false)
-      router.push(redirectTo)
-    }
-  }, [open, state.status, onOpenChange, router, redirectTo])
 
   /**
    * Tear down a pending QR handshake when the dialog closes.

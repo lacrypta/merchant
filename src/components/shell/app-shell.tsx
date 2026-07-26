@@ -1,12 +1,15 @@
-import Link from "next/link"
-
-import { Logo } from "@/components/brand/logo"
 import { AppSidebar } from "@/components/shell/app-sidebar"
-import { MobileTabBar } from "@/components/shell/mobile-tab-bar"
 import { LiveRegions } from "@/components/shell/live-regions"
+import { MobileTabBar } from "@/components/shell/mobile-tab-bar"
+import { SiteNavbar } from "@/components/shell/site-navbar"
 
 /**
  * Dashboard shell.
+ *
+ * Uses the SAME <SiteNavbar> as the landing and the public storefront, so the
+ * brand mark and the account control never shift position when you log in.
+ * The sidebar sits BELOW that navbar rather than beside it, which is what
+ * lets the header span the full width in every context.
  *
  * The sidebar/tab-bar switch is pure CSS (`hidden lg:flex` / `lg:hidden`),
  * NOT useMediaQuery — a JS breakpoint would flash the wrong layout on first
@@ -18,10 +21,11 @@ export function AppShell({
   topbar,
 }: {
   children: React.ReactNode
+  /** Screen-owned context (relay status, publish queue) shown in the navbar. */
   topbar?: React.ReactNode
 }) {
   return (
-    <div className="flex min-h-dvh flex-col lg:flex-row">
+    <div className="flex min-h-dvh flex-col">
       {/* First focusable node on the page. */}
       <a
         href="#main"
@@ -30,20 +34,14 @@ export function AppShell({
         Saltar al contenido
       </a>
 
-      <AppSidebar />
+      <SiteNavbar extra={topbar} />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur md:px-6">
-          <Link href="/products" className="lg:hidden">
-            <Logo showWordmark={false} />
-            <span className="sr-only">Merchant Manager</span>
-          </Link>
-          {topbar}
-        </header>
+      <div className="mx-auto flex w-full max-w-app flex-1">
+        <AppSidebar />
 
         <main
           id="main"
-          className="mx-auto w-full max-w-app flex-1 px-4 py-6 pb-24 md:px-6 lg:pb-6"
+          className="min-w-0 flex-1 px-4 py-6 pb-24 md:px-6 lg:pb-6"
         >
           {children}
         </main>

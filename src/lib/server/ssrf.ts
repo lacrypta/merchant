@@ -82,10 +82,17 @@ export function ssrfSafeAgent(): Agent {
           return callback(new SsrfBlockedError(remote ?? "unknown"), null)
         }
 
-        // Re-validate on every reconnect of a kept-alive socket.
-        socket.once("connect", () => {
-          const addr = socket.remoteAddress
-          if (addr && isPrivateAddress(addr)) socket.destroy()
+        /**
+         * A socket with no 'error' listener escalates to an
+         * uncaughtException and takes the server down. That is not
+         * hypothetical: a plain ETIMEDOUT reaching an unhandled socket
+         * crashed the dev server and blanked every page.
+         *
+         * undici handles the failure through its own pipeline; this listener
+         * exists purely so Node never sees an unhandled 'error' event.
+         */
+        socket.on("error", () => {
+          /* handled by undici; swallow so Node doesn't escalate it */
         })
 
         return callback(null, socket)

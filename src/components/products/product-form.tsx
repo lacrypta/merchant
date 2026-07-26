@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import { Loader2 } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
@@ -44,11 +43,15 @@ function emptyProduct(pubkey: string): Product {
 export function ProductForm({
   pubkey,
   existing,
+  defaultCategory,
+  onDone,
 }: {
   pubkey: string
   existing?: Product
+  defaultCategory?: string | null
+  /** Called once the write is queued — the dialog closes on this. */
+  onDone: () => void
 }) {
-  const router = useRouter()
   const { categories, saveProduct } = useCatalog()
 
   const base = React.useMemo(
@@ -70,7 +73,13 @@ export function ProductForm({
     base.stock !== null ? String(base.stock) : ""
   )
   const [visibility, setVisibility] = React.useState<Visibility>(base.visibility)
-  const [selected, setSelected] = React.useState<string[]>(base.categories)
+  const [selected, setSelected] = React.useState<string[]>(() =>
+    base.categories.length > 0
+      ? base.categories
+      : defaultCategory
+        ? [defaultCategory]
+        : []
+  )
   const [imageUrl, setImageUrl] = React.useState(base.images[0]?.url ?? "")
   const [errors, setErrors] = React.useState<FieldErrors>({})
   const [saving, setSaving] = React.useState<null | "draft" | "publish">(null)
@@ -131,11 +140,10 @@ export function ProductForm({
 
     try {
       // Fire-and-forget: saveProduct applies the change locally and hands the
-      // event to the background queue, so there is nothing to wait for. The
-      // merchant lands back on the catalog immediately and watches the publish
-      // progress in the monitor.
+      // event to the background queue, so the dialog can close immediately.
+      // Publish progress lives in the monitor, not here.
       saveProduct(product)
-      router.push("/products")
+      onDone()
     } catch (e) {
       setErrors({
         form: e instanceof Error ? e.message : "No pudimos guardar el producto.",
@@ -150,7 +158,7 @@ export function ProductForm({
         e.preventDefault()
         submit("published")
       }}
-      className="grid gap-8 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)]"
+      className="grid gap-8 md:grid-cols-[minmax(0,1fr)_auto]"
       noValidate
     >
       <div className="space-y-6">
@@ -316,7 +324,7 @@ export function ProductForm({
           </p>
         ) : null}
 
-        <div className="sticky bottom-0 -mx-4 flex flex-wrap gap-3 border-t border-border bg-background/95 px-4 py-4 backdrop-blur">
+        <div className="flex flex-wrap gap-3 border-t border-border pt-5">
           <Button type="submit" disabled={saving !== null}>
             {saving === "publish" ? (
               <>
@@ -337,17 +345,13 @@ export function ProductForm({
           >
             {saving === "draft" ? "Guardando…" : "Guardar borrador"}
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => router.push("/products")}
-          >
+          <Button type="button" variant="ghost" onClick={onDone}>
             Cancelar
           </Button>
         </div>
       </div>
 
-      <aside className="hidden lg:block">
+      <aside className="hidden md:block">
         <div className="sticky top-24 space-y-3">
           <p className="text-sm text-muted-foreground">Así se va a ver</p>
           <article className="w-[200px] overflow-hidden rounded-xl border border-border bg-card">
