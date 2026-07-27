@@ -42,7 +42,7 @@ export function DeleteCategoryDialog({
           <AlertDialogTitle>¿Eliminar «{category?.name}»?</AlertDialogTitle>
           <AlertDialogDescription>
             {memberCount === 0
-              ? "La categoría está vacía. Vas a firmar 1 evento."
+              ? "La categoría está vacía. El cambio queda pendiente hasta que guardes."
               : `Tiene ${productos}. Elegí qué hacer con ${one ? "él" : "ellos"}.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -53,7 +53,7 @@ export function DeleteCategoryDialog({
           <Button variant="outline" onClick={() => onConfirm("orphan")}>
             {memberCount === 0
               ? "Eliminar"
-              : `${one ? "Dejarlo" : "Dejarlos"} sin categoría (${memberCount + 1} firmas)`}
+              : `${one ? "Dejarlo" : "Dejarlos"} sin categoría`}
           </Button>
 
           {memberCount > 0 ? (

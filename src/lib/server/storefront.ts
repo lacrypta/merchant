@@ -1,5 +1,10 @@
 import "server-only"
 
+import { cache } from "react"
+import { nip19 } from "nostr-tools"
+
+import type { CartItem, CatalogIndex } from "@/lib/domain/cart"
+import { groupCatalog, type CategoryGroup } from "@/lib/domain/catalog-group"
 import { parseCategoryEvent, type Category } from "@/lib/domain/category"
 import { KINDS } from "@/lib/domain/kinds"
 import {
@@ -10,7 +15,8 @@ import {
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 import { coordinateOf, tagValue } from "@/lib/nostr/tags"
 import type { SignedEvent } from "@/lib/nostr/types"
-import { latestByAddress, queryRelays } from "@/lib/server/relay-read"
+import { latestByAddress, queryRelays, type RelayStat } from "@/lib/server/relay-read"
+import { resolveHandle, type ResolvedHandle } from "@/lib/server/resolve-handle"
 
 export interface MerchantProfile {
   pubkey: string
@@ -23,10 +29,7 @@ export interface MerchantProfile {
   lud16?: string
 }
 
-export interface CategoryGroup {
-  category: Category | null // null = "Sin categoría"
-  products: Product[]
-}
+export type { CategoryGroup }
 
 export interface Storefront {
   pubkey: string
@@ -35,6 +38,8 @@ export interface Storefront {
   productCount: number
   /** True when no relay answered at all — distinct from "answered, but empty". */
   relaysUnreachable: boolean
+  /** What each relay contributed to this page. Feeds the navbar relay log. */
+  relayLog: RelayStat[]
 }
 
 function parseProfile(e: SignedEvent | undefined): MerchantProfile | null {
@@ -98,11 +103,20 @@ export async function loadStorefront(
 ): Promise<Storefront> {
   const relays = dedupeRelays([...relayHints, ...DEFAULT_RELAYS])
 
-  const { events, unreachable } = await queryRelays(relays, [
-    { kinds: [KINDS.METADATA], authors: [pubkey], limit: 1 },
-    { kinds: [KINDS.PRODUCT, KINDS.CATEGORY], authors: [pubkey] },
-    { kinds: [KINDS.DELETION], authors: [pubkey] },
-  ])
+  const { events, unreachable, stats } = await queryRelays(
+    relays,
+    [
+      { kinds: [KINDS.METADATA], authors: [pubkey], limit: 1 },
+      { kinds: [KINDS.PRODUCT, KINDS.CATEGORY], authors: [pubkey] },
+      { kinds: [KINDS.DELETION], authors: [pubkey] },
+    ],
+    {
+      label: "Catálogo, perfil y borrados",
+      // Index 2 is the kind:5 read. A missed deletion resurrects a product
+      // the merchant deleted, so it never gets cut short.
+      completeFilters: [2],
+    }
+  )
 
   if (unreachable) {
     return {
@@ -111,6 +125,7 @@ export async function loadStorefront(
       groups: [],
       productCount: 0,
       relaysUnreachable: true,
+      relayLog: stats,
     }
   }
 
@@ -135,44 +150,7 @@ export async function loadStorefront(
     const r = parseCategoryEvent(e, pubkey)
     if (r.ok) categories.push(r.value)
   }
-  categories.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, "es-AR"))
-
-  // `t` is authoritative for MEMBERSHIP; the category's `a` list only orders
-  // within the group. So drift between the two degrades to lost ordering,
-  // never to a product vanishing.
-  const bySlug = new Map(categories.map((c) => [c.slug, c]))
-  const grouped = new Map<string, Product[]>()
-  const uncategorised: Product[] = []
-
-  for (const p of products) {
-    const primary = p.categories.find((s) => bySlug.has(s))
-    if (primary) {
-      const list = grouped.get(primary) ?? []
-      list.push(p)
-      grouped.set(primary, list)
-    } else {
-      uncategorised.push(p)
-    }
-  }
-
-  const groups: CategoryGroup[] = []
-  for (const c of categories) {
-    const list = grouped.get(c.slug)
-    if (!list?.length) continue
-    const order = new Map(c.productDs.map((d, i) => [d, i]))
-    list.sort(
-      (a, b) =>
-        (order.get(a.d) ?? Number.MAX_SAFE_INTEGER) -
-          (order.get(b.d) ?? Number.MAX_SAFE_INTEGER) ||
-        a.title.localeCompare(b.title, "es-AR")
-    )
-    groups.push({ category: c, products: list })
-  }
-
-  if (uncategorised.length) {
-    uncategorised.sort((a, b) => a.title.localeCompare(b.title, "es-AR"))
-    groups.push({ category: null, products: uncategorised })
-  }
+  const groups = groupCatalog(products, categories)
 
   return {
     pubkey,
@@ -180,7 +158,108 @@ export async function loadStorefront(
     groups,
     productCount: products.length,
     relaysUnreachable: false,
+    relayLog: stats,
   }
+}
+
+/**
+ * Resolve a handle and load its catalog, ONCE per request.
+ *
+ * React's `cache()` dedupes within a single render pass. Before this, the page
+ * and generateMetadata each ran their own six-second relay fan-out for the
+ * same merchant; now the layout, both pages and the metadata share one.
+ * Cross-request caching stays ISR's job (`revalidate = 60`).
+ */
+export const getStorefront = cache(
+  async (
+    handle: string
+  ): Promise<{ resolved: ResolvedHandle; store: Storefront } | null> => {
+    const resolved = await resolveHandle(handle)
+    if (!resolved) return null
+    const store = await loadStorefront(resolved.pubkey, resolved.relayHints)
+    return { resolved, store }
+  }
+)
+
+/**
+ * What the client is allowed to know about the merchant.
+ *
+ * A deliberate projection, not the whole Storefront: this crosses into a
+ * client component, and shipping the full product objects (markdown
+ * descriptions, unknownTags, every image) would put tens of kilobytes of
+ * never-rendered payload into the RSC stream.
+ */
+export interface MerchantSummary {
+  pubkey: string
+  npub: string
+  displayName: string
+  picture?: string
+  nip05?: string
+  lud16?: string
+  /** False ⇒ the merchant has no Lightning address, so nothing can be paid. */
+  canCheckout: boolean
+}
+
+export function toMerchantSummary(
+  resolved: ResolvedHandle,
+  store: Storefront
+): MerchantSummary {
+  const displayName =
+    firstNonBlank(store.profile?.displayName, store.profile?.name) ||
+    `${nip19.npubEncode(resolved.pubkey).slice(0, 12)}…`
+
+  return {
+    pubkey: resolved.pubkey,
+    npub: nip19.npubEncode(resolved.pubkey),
+    displayName,
+    picture: store.profile?.picture,
+    // NIP-05 is identification, not verification: only surface it when the
+    // domain actually resolved back to this pubkey.
+    nip05: resolved.via === "nip05" ? resolved.nip05 : undefined,
+    lud16: store.profile?.lud16,
+    canCheckout: Boolean(store.profile?.lud16),
+  }
+}
+
+/**
+ * The cart-relevant slice of every product, by `d`.
+ *
+ * Small enough to ship whole (a few KB), and it is what lets the cart notice
+ * that a stored line was deleted, repriced or sold out since it was added.
+ */
+export function toCatalogIndex(store: Storefront): CatalogIndex {
+  const index: Record<string, CartItem> = {}
+  for (const group of store.groups) {
+    for (const p of group.products) {
+      const thumb = p.images.find((i) => i.width === 256) ?? p.images[0]
+      index[p.d] = {
+        d: p.d,
+        title: p.title,
+        thumbUrl: thumb?.url,
+        price: p.price
+          ? { amount: p.price.amount, currency: p.price.currency }
+          : null,
+        stock: p.stock,
+        visibility: p.visibility,
+      }
+    }
+  }
+  return index
+}
+
+/**
+ * Blank profile fields are common, and "blank" includes invisible characters
+ * — real kind-0 events carry U+200E and friends as a display_name, which
+ * `.trim()` happily keeps.
+ */
+const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF\u00AD]/g
+
+export function firstNonBlank(...values: (string | undefined)[]): string {
+  for (const v of values) {
+    const cleaned = v?.replace(INVISIBLE, "").trim()
+    if (cleaned) return cleaned
+  }
+  return ""
 }
 
 /** Profile-only lookup, for the merchant header when the catalog fails. */

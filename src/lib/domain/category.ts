@@ -3,7 +3,7 @@ import { derivePosId } from "@/lib/domain/pos-id"
 import { slugify } from "@/lib/domain/slug"
 import { nextCreatedAt } from "@/lib/nostr/created-at"
 import { coordinate, tagValue, toInt } from "@/lib/nostr/tags"
-import type { ParseResult, ProductImage } from "@/lib/domain/product"
+import type { EventBody, ParseResult, ProductImage } from "@/lib/domain/product"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
 export interface Category {
@@ -46,7 +46,15 @@ export function buildCategoryEvent(
     coordinate(KINDS.CATEGORY, pubkey, c.d),
     previousCreatedAt
   )
+  return { ...categoryEventBody(c, pubkey), created_at }
+}
 
+/**
+ * The timestamp-free half. See productEventBody() for why this split exists:
+ * the diff must compare the exact wire bytes, and it cannot go through
+ * nextCreatedAt() without ratcheting the timestamp on every render.
+ */
+export function categoryEventBody(c: Category, pubkey: string): EventBody {
   const tags: string[][] = [
     ["d", c.d],
     ["title", c.name],
@@ -74,7 +82,7 @@ export function buildCategoryEvent(
   tags.push(["client", "merchant-manager"])
   tags.push(...c.unknownTags)
 
-  return { kind: KINDS.CATEGORY, created_at, content: "", tags }
+  return { kind: KINDS.CATEGORY, content: "", tags }
 }
 
 /** NIP-44 v2 payloads base64 to a leading 'A'. */

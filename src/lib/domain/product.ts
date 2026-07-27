@@ -113,6 +113,9 @@ function altForProduct(p: Pick<Product, "title" | "price">): string {
  *  - `published_at` is the FIRST publish time and survives every edit.
  *  - `created_at` strictly increases (see nextCreatedAt).
  */
+/** An event minus its timestamp: everything a relay actually stores about it. */
+export type EventBody = Omit<EventTemplate, "created_at">
+
 export function buildProductEvent(
   p: Product,
   categoryDByslug: Map<string, string>,
@@ -123,7 +126,31 @@ export function buildProductEvent(
     coordinate(kind, p.pubkey, p.d),
     previousCreatedAt
   )
-  const publishedAt = p.publishedAt || created_at
+  return {
+    ...productEventBody(p, categoryDByslug, p.publishedAt || created_at),
+    created_at,
+  }
+}
+
+/**
+ * The timestamp-free half of the product event.
+ *
+ * Split out because the dashboard needs to answer "does this differ from what
+ * is published?" on every render, and it must answer it against exactly the
+ * bytes that would go on the wire — not a hand-maintained field list that
+ * drifts out of sync with the builder.
+ *
+ * It cannot call buildProductEvent() to find out: that goes through
+ * nextCreatedAt(), which mutates a per-address high-water mark. Diffing
+ * through it would ratchet created_at forward on every render until it
+ * tripped the 60-second drift guard.
+ */
+export function productEventBody(
+  p: Product,
+  categoryDByslug: Map<string, string>,
+  publishedAt: number
+): EventBody {
+  const kind = p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
 
   const tags: string[][] = [
     ["d", p.d],
@@ -172,7 +199,7 @@ export function buildProductEvent(
   tags.push(["client", "merchant-manager"])
   tags.push(...p.unknownTags)
 
-  return { kind, created_at, content: p.description, tags }
+  return { kind, content: p.description, tags }
 }
 
 export function parseProductEvent(e: SignedEvent): ParseResult<Product> {

@@ -1,8 +1,10 @@
 "use client"
 
-import { firstValueFrom, lastValueFrom, toArray, timeout, catchError, of } from "rxjs"
+import { EMPTY, firstValueFrom, lastValueFrom, toArray, timeout, catchError, of } from "rxjs"
 
 import { ensureNostrGlobals } from "@/lib/nostr/adapters/applesauce"
+import { addRelayLog } from "@/lib/nostr/relay-log"
+import { enabledRelays } from "@/lib/nostr/relay-prefs"
 import type {
   Filter,
   PublishReport,
@@ -169,29 +171,80 @@ export function publishEventStreaming(
  * One-shot load. `request()` completes on its own once relays are done and
  * de-duplicates across them, so no manual EOSE bookkeeping is needed.
  */
+/**
+ * One-shot read across relays, one subscription per relay.
+ *
+ * Per-relay rather than one combined request for two reasons. First, the
+ * timeout: `pool.request()` completes only when EVERY relay is done, so a
+ * host that never connects used to hold the whole read open — the dashboard
+ * waited eight seconds for `relay.lacrypta.ar` (Cloudflare 1033) while the
+ * events had all arrived in a few hundred milliseconds. Second, attribution:
+ * the relay panel can only say "this relay gave us 12 events" if the reads
+ * were separable in the first place.
+ *
+ * The timeout is two limits, not one:
+ *   first: the ceiling before giving up on any answer at all
+ *   each:  the quiet period after the last event that means "that's all"
+ *
+ * Switching to EMPTY rather than throwing completes the stream, so `toArray`
+ * still emits everything collected up to that point.
+ */
 export async function queryEvents(
   filters: Filter[],
   relays: string[],
-  opts: { timeoutMs?: number } = {}
+  opts: { timeoutMs?: number; settleMs?: number; label?: string } = {}
 ): Promise<SignedEvent[]> {
   if (relays.length === 0 || filters.length === 0) return []
   const pool = ensureNostrGlobals()
+  const label = opts.label ?? "Consulta"
+  // One place to honour the relay toggles, so every caller gets it for free.
+  const active = enabledRelays(relays)
 
   const results = await Promise.all(
-    filters.map((f) =>
-      lastValueFrom(
-        pool.request(relays, f as never).pipe(
-          toArray(),
-          timeout(opts.timeoutMs ?? 8_000),
-          catchError(() => of([] as SignedEvent[]))
+    active.map(async (url) => {
+      const startedAt = Date.now()
+      const perRelay: SignedEvent[] = []
+
+      await Promise.all(
+        filters.map((f) =>
+          lastValueFrom(
+            pool.request([url], f as never).pipe(
+              timeout({
+                first: opts.timeoutMs ?? 8_000,
+                each: opts.settleMs ?? 600,
+                with: () => EMPTY,
+              }),
+              toArray(),
+              catchError(() => of([] as SignedEvent[]))
+            )
+          )
+            .then((list) => {
+              for (const e of list as SignedEvent[]) perRelay.push(e)
+            })
+            .catch(() => {})
         )
-      ).catch(() => [] as SignedEvent[])
-    )
+      )
+
+      addRelayLog({
+        label,
+        relay: url,
+        events: perRelay.length,
+        bytes: perRelay.reduce((n, e) => n + JSON.stringify(e).length, 0),
+        ms: Date.now() - startedAt,
+        status: perRelay.length > 0 ? "ok" : "empty",
+        origin: "client",
+      })
+
+      return perRelay
+    })
   )
 
+  // Cross-relay de-duplication. The per-relay counts in the log are
+  // deliberately the RAW totals — that is the point of the panel: seeing that
+  // four relays each carried the same twelve events is the interesting part.
   const byId = new Map<string, SignedEvent>()
   for (const list of results) {
-    for (const e of list as SignedEvent[]) byId.set(e.id, e)
+    for (const e of list) byId.set(e.id, e)
   }
   return [...byId.values()]
 }
@@ -204,9 +257,10 @@ export function subscribeEvents(
 ): Unsubscribe {
   if (relays.length === 0 || filters.length === 0) return () => {}
   const pool = ensureNostrGlobals()
+  const active = enabledRelays(relays)
 
   const subs = filters.map((f) =>
-    pool.subscription(relays, f as never).subscribe({
+    pool.subscription(active, f as never).subscribe({
       next: (e) => onEvent(e as SignedEvent),
       error: () => {
         /* a dead relay must not tear down the rest */

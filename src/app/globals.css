@@ -330,6 +330,61 @@
 
 /* Expanded hit area for a visually-small control (row menus, thumb delete,
    crop +/-). Keeps the 44px WCAG 2.5.8 target without a bigger box. */
+/* ── Motion ────────────────────────────────────────────────────────────────
+   Enter transitions use @starting-style, so they need no JavaScript and no
+   animation library: the browser interpolates from the starting rule the
+   first time the element is painted. EXIT is the hard half — React unmounts
+   immediately — and is handled by usePresenceList() toggling `.is-leaving`.
+
+   All of these are inert under prefers-reduced-motion (§6 zeroes every
+   duration), so no per-utility guard is needed. */
+
+/* A row sliding into a list. */
+@utility enter-row {
+  transition:
+    opacity 220ms var(--ease-brand),
+    transform 220ms var(--ease-brand);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-0.375rem);
+  }
+}
+
+/* The exit half: collapses height as well as fading, so the rows below close
+   the gap smoothly instead of snapping up once the element unmounts. */
+@utility is-leaving {
+  opacity: 0;
+  transform: translateX(0.75rem);
+  pointer-events: none;
+}
+
+/* A panel or card appearing. */
+@utility enter-pop {
+  transition:
+    opacity 260ms var(--ease-brand),
+    transform 260ms var(--ease-brand);
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* One-shot attention pull for a value that just changed on its own. */
+@utility flash-primary {
+  animation: flash-primary 700ms var(--ease-brand);
+}
+
+@keyframes flash-primary {
+  0% {
+    color: var(--color-primary);
+    transform: scale(1.06);
+  }
+  100% {
+    color: inherit;
+    transform: scale(1);
+  }
+}
+
 @utility tap-44 {
   position: relative;
   &::after {

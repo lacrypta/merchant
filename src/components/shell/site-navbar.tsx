@@ -2,6 +2,8 @@ import Link from "next/link"
 
 import { AccountMenu } from "@/components/auth/account-menu"
 import { Logo } from "@/components/brand/logo"
+import { SyncBadge } from "@/components/feedback/sync-badge"
+import { RelayLogButton } from "@/components/nostr/relay-log-button"
 
 /**
  * THE navbar. One component for every page — landing, public storefront and
@@ -24,8 +26,14 @@ export function SiteNavbar({ extra }: { extra?: React.ReactNode }) {
           <span className="sr-only">Merchant Manager — La Crypta</span>
         </Link>
 
+        {/* Beside the brand rather than in the busy right-hand cluster: it is
+            ambient status about the whole page, not an action, and it must not
+            shove the cart and account controls sideways when it appears. */}
+        <SyncBadge className="hidden sm:inline-flex" />
+
         <div className="ml-auto flex items-center gap-2">
           {extra}
+          <RelayLogButton />
           <AccountMenu />
         </div>
       </div>

@@ -29,6 +29,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { GripVertical, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
+import { ChangeBadge } from "@/components/catalog/change-badge"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -375,6 +376,7 @@ function CategorySection({
   onMoveProduct: (p: Product, toSlug: string | null) => void
 }) {
   const category = group.category
+  const { changes } = useCatalog()
 
   // The SECTION is the sortable (categories reorder). Nothing else may claim
   // this node — see the note at the top of the file.
@@ -426,6 +428,10 @@ function CategorySection({
             {productIds.length}
           </span>
         </h2>
+
+        {category ? (
+          <ChangeBadge kind={changes.categories.get(category.d)} />
+        ) : null}
 
         {/* Present on every group, including the loose bucket: adding a
             product to the section you are already looking at should not
@@ -545,7 +551,7 @@ function ProductRow({
   onEdit: () => void
   onMove: (slug: string | null) => void
 }) {
-  const { pending } = useCatalog()
+  const { pending, changes } = useCatalog()
   const busy = pending.has(product.d)
   const s = useSortable({ id: product.d, disabled: busy })
   const thumb = product.images[0]
@@ -599,6 +605,7 @@ function ProductRow({
           >
             {product.title}
           </button>
+          <ChangeBadge kind={changes.products.get(product.d)} />
           {product.lifecycle === "draft" ? (
             <Badge className="border-warning/30 bg-warning-bg text-warning">
               Borrador
