@@ -8,7 +8,7 @@ import {
   setRelayEnabled,
   writeRelayEntries,
 } from "./relay-prefs"
-import type { RelayEntry } from "@/lib/domain/relay-list"
+import { writeRelays, type RelayEntry } from "@/lib/domain/relay-list"
 
 const A = "wss://relay.damus.io"
 const B = "wss://nos.lol"
@@ -77,33 +77,51 @@ describe("enabledRelays", () => {
   })
 })
 
-describe("setRelayEnabled and the write set", () => {
-  it("leaves an existing relay's write flag alone", () => {
-    // The panel's switch is the "Leer" setting. Turning it off must not stop
-    // the merchant's catalog from being published there.
+describe("setRelayEnabled and publishing", () => {
+  it("stops publishing to a relay that was switched off", () => {
+    // The requirement: a disabled relay must not receive events.
     writeRelayEntries([{ url: A, read: true, write: true, source: "manual" }])
     setRelayEnabled(A, false)
-    expect(readRelayEntries()[0]).toMatchObject({ read: false, write: true })
+    expect(readRelayEntries()[0]).toMatchObject({ read: false, write: false })
+    expect(writeRelays(readRelayEntries())).toEqual([])
   })
 
-  it("restores only reads when re-enabled", () => {
-    writeRelayEntries([{ url: A, read: true, write: false, source: "manual" }])
+  it("drops a disabled relay from the write set among others", () => {
+    writeRelayEntries([
+      { url: A, read: true, write: true, source: "manual" },
+      { url: B, read: true, write: true, source: "manual" },
+    ])
+    setRelayEnabled(A, false)
+    expect(writeRelays(readRelayEntries())).toEqual([B])
+  })
+
+  it("switches a default relay fully off in one go", () => {
+    setRelayEnabled(A, false)
+    expect(readRelayEntries()[0]).toMatchObject({ read: false, write: false })
+  })
+
+  it("restores reads and writes when switched back on", () => {
     setRelayEnabled(A, false)
     setRelayEnabled(A, true)
-    // write stays false — a deliberately read-only relay must not become
-    // writable just because it was toggled off and on again.
+    expect(readRelayEntries()[0]).toMatchObject({ read: true, write: true })
+  })
+
+  it("never turns purplepag.es writable", () => {
+    // It rejects kind 30402 outright; see READ_ONLY_BY_DEFAULT.
+    const url = "wss://purplepag.es"
+    setRelayEnabled(url, false)
+    setRelayEnabled(url, true)
     expect(readRelayEntries()[0]).toMatchObject({ read: true, write: false })
   })
 
-  it("materialises a default relay as writable", () => {
-    setRelayEnabled(A, false)
-    expect(readRelayEntries()[0]).toMatchObject({ read: false, write: true })
-  })
-
-  it("never materialises purplepag.es as writable", () => {
-    // It rejects kind 30402 outright; see READ_ONLY_BY_DEFAULT.
-    setRelayEnabled("wss://purplepag.es", false)
-    expect(readRelayEntries()[0]).toMatchObject({ write: false })
+  it("counts a write-only relay as in use", () => {
+    // Off means BOTH flags down. Reporting a write-only relay as off would
+    // invite a toggle that silently changes what it does.
+    const entries = [{ url: A, read: false, write: true, source: "manual" as const }]
+    expect(isRelayEnabled(A, entries)).toBe(true)
+    // ...but it must still never be queried.
+    writeRelayEntries(entries)
+    expect(enabledRelays([A, B])).toEqual([B])
   })
 })
 
