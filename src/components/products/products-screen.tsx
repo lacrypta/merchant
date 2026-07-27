@@ -5,6 +5,7 @@ import Link from "next/link"
 
 import { useAuth } from "@/components/auth/auth-provider"
 import { useCatalog } from "@/components/catalog/catalog-provider"
+import { UnsavedBar } from "@/components/catalog/unsaved-bar"
 import { CategoryDialog } from "@/components/categories/category-dialog"
 import { ProductDialog } from "@/components/products/product-dialog"
 import { DeleteCategoryDialog } from "@/components/categories/delete-category-dialog"
@@ -186,9 +187,11 @@ export function ProductsScreen() {
       <PageHeader
         title="Catálogo"
         count={products.length}
-        description="Categorías y productos. Se publican en nostr firmados con tu npub."
+        description="Categorías y productos. Los cambios quedan pendientes hasta que los publicás en nostr."
         action={actions}
       />
+
+      <UnsavedBar />
 
       {nothingAtAll ? (
         <EmptyState
@@ -314,8 +317,8 @@ export function ProductsScreen() {
               ¿Eliminar «{productToDelete?.title}»?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Publicamos un pedido de borrado (NIP-09) y dejamos una lápida en
-              su lugar. Vas a firmar 2 eventos.
+              Queda pendiente hasta que guardes. Al publicar mandamos un pedido
+              de borrado (NIP-09) y dejamos una lápida en su lugar: 2 firmas.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

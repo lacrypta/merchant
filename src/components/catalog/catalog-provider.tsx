@@ -1,5 +1,6 @@
 "use client"
 
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
 
 import { useAuth } from "@/components/auth/auth-provider"
@@ -9,6 +10,12 @@ import {
   parseCategoryEvent,
   type Category,
 } from "@/lib/domain/category"
+import {
+  EMPTY_DIFF,
+  diffCatalog,
+  type CatalogDiff,
+  type CatalogSnapshot,
+} from "@/lib/domain/catalog-diff"
 import { KINDS } from "@/lib/domain/kinds"
 import {
   buildProductEvent,
@@ -24,15 +31,38 @@ import {
 } from "@/lib/domain/relay-list"
 import { nextCreatedAt, nowSeconds } from "@/lib/nostr/created-at"
 import { queryEvents } from "@/lib/nostr/backend"
+import { CACHE, qk } from "@/lib/query/keys"
+import { readRelayEntries, writeRelayEntries } from "@/lib/nostr/relay-prefs"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 import { coordinate, coordinateOf } from "@/lib/nostr/tags"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
+/**
+ * The catalog, as two snapshots.
+ *
+ * `published` is what the relays returned. `draft` is what the merchant is
+ * looking at. Every edit writes only to `draft`; nothing reaches a relay
+ * until saveChanges().
+ *
+ * Why staged rather than write-through: editing a catalog is a burst
+ * activity. Renaming three products and dragging one between categories used
+ * to be five signature prompts — and on a NIP-46 signer that is five separate
+ * taps on the merchant's phone, each with its own chance to fail halfway and
+ * leave the catalog in a state nobody chose. Batching turns that into one
+ * deliberate act with a number attached to it.
+ */
 interface CatalogContextValue {
   loading: boolean
+  /** The DRAFT catalog — what the UI renders and edits. */
   products: Product[]
   categories: Category[]
   relayEntries: RelayEntry[]
+  /** Which entities differ from the published version, and how. */
+  changes: CatalogDiff
+  /** True while a save is draining through the publish queue. */
+  saving: boolean
+  /** True while a background refresh runs over data already on screen. */
+  syncing: boolean
   /** d-tags with an in-flight write, for the dimmed row treatment. */
   pending: Set<string>
   refresh: () => Promise<void>
@@ -40,21 +70,28 @@ interface CatalogContextValue {
   deleteProduct: (p: Product) => void
   saveCategory: (c: Category) => void
   deleteCategory: (c: Category, reassign: "orphan" | "delete") => void
+  /** Publish everything staged. The only thing that writes to a relay. */
+  saveChanges: () => void
+  /** Throw the draft away and go back to what is published. */
+  discardChanges: () => void
   setRelayEntries: (entries: RelayEntry[]) => void
   publishRelayList: () => void
 }
 
 const CatalogContext = React.createContext<CatalogContextValue | null>(null)
 
-const RELAYS_KEY = "mm:relays"
+const EMPTY_SNAPSHOT: CatalogSnapshot = { products: [], categories: [] }
 
+/**
+ * The merchant's saved relay record, or null if they have never touched it.
+ *
+ * Goes through relay-prefs so this screen and the navbar relay panel share
+ * one cache and one writer — otherwise toggling a relay in one place leaves
+ * the other showing the old value for the rest of the session.
+ */
 function readStoredRelays(): RelayEntry[] | null {
-  try {
-    const raw = window.localStorage.getItem(RELAYS_KEY)
-    return raw ? (JSON.parse(raw) as RelayEntry[]) : null
-  } catch {
-    return null
-  }
+  const entries = readRelayEntries()
+  return entries.length > 0 ? entries : null
 }
 
 /**
@@ -96,134 +133,218 @@ function latestByAddress(events: SignedEvent[]): SignedEvent[] {
   return [...best.values()]
 }
 
+const byOrderThenName = (a: Category, b: Category) =>
+  a.order - b.order || a.name.localeCompare(b.name, "es-AR")
+
+interface CatalogRead {
+  snapshot: CatalogSnapshot
+  /** The merchant's published NIP-65 list, if they have one. */
+  relayList: RelayEntry[] | null
+}
+
+/**
+ * Read the merchant's whole catalog off their relays.
+ *
+ * Extracted out of the provider so react-query owns it: the result is
+ * persisted to IndexedDB, which is what lets the dashboard paint a full
+ * catalog on the first frame after a reload instead of four skeleton cards
+ * for however long the slowest relay takes.
+ */
+async function readCatalog(
+  pubkey: string,
+  readUrls: string[]
+): Promise<CatalogRead> {
+  const events = await queryEvents(
+    [
+      {
+        kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
+        authors: [pubkey],
+      },
+      { kinds: [KINDS.DELETION], authors: [pubkey] },
+      { kinds: [KINDS.RELAY_LIST], authors: [pubkey] },
+    ],
+    readUrls,
+    { label: "Catálogo, borrados y relays" }
+  )
+
+  const deletions = buildDeletionIndex(events)
+  const live = events.filter((e) => {
+    const coord = coordinateOf(e)
+    return !coord || (deletions.get(coord) ?? -1) < e.created_at
+  })
+
+  const addressable = latestByAddress(live.filter((e) => e.kind >= 30000))
+
+  const products: Product[] = []
+  const categories: Category[] = []
+  for (const e of addressable) {
+    if (e.kind === KINDS.PRODUCT || e.kind === KINDS.PRODUCT_DRAFT) {
+      const r = parseProductEvent(e)
+      if (r.ok) products.push(r.value)
+    } else if (e.kind === KINDS.CATEGORY) {
+      const r = parseCategoryEvent(e, pubkey)
+      if (r.ok) categories.push(r.value)
+    }
+  }
+  categories.sort(byOrderThenName)
+
+  const relayEvent = live
+    .filter((e) => e.kind === KINDS.RELAY_LIST)
+    .sort((a, b) => b.created_at - a.created_at)[0]
+
+  return {
+    snapshot: { products, categories },
+    relayList: relayEvent ? parseRelayListEvent(relayEvent) : null,
+  }
+}
+
 export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const { state, signer } = useAuth()
   const { enqueue } = usePublishMonitor()
+  const queryClient = useQueryClient()
   const pubkey = state.status === "ready" ? state.pubkey : null
 
-  const [loading, setLoading] = React.useState(true)
-  const [products, setProducts] = React.useState<Product[]>([])
-  const [categories, setCategories] = React.useState<Category[]>([])
+  const [draft, setDraft] = React.useState<CatalogSnapshot>(EMPTY_SNAPSHOT)
   const [relayEntries, setRelayEntriesState] = React.useState<RelayEntry[]>(() =>
     mergeWithDefaults([], DEFAULT_RELAYS)
   )
   const [pending, setPending] = React.useState<Set<string>>(new Set())
+  /**
+   * Derived, not stored: "we have work in flight" is exactly what `pending`
+   * already means. A separate boolean would have to be set before enqueue and
+   * cleared after the last settle, and getting that ordering wrong shows a
+   * spinner that never stops.
+   */
+  const saving = pending.size > 0
 
   // Mirrored into refs so async queue callbacks read CURRENT values without
   // being re-created on every edit. Written in effects, never during render.
   const relayEntriesRef = React.useRef(relayEntries)
-  const productsRef = React.useRef(products)
-  const categoriesRef = React.useRef(categories)
+  const draftRef = React.useRef(draft)
   React.useEffect(() => {
     relayEntriesRef.current = relayEntries
   }, [relayEntries])
   React.useEffect(() => {
-    productsRef.current = products
-  }, [products])
-  React.useEffect(() => {
-    categoriesRef.current = categories
-  }, [categories])
+    draftRef.current = draft
+  }, [draft])
 
   const setRelayEntries = React.useCallback((entries: RelayEntry[]) => {
     setRelayEntriesState(entries)
-    try {
-      window.localStorage.setItem(RELAYS_KEY, JSON.stringify(entries))
-    } catch {
-      /* private mode */
-    }
+    writeRelayEntries(entries)
   }, [])
 
-  const load = React.useCallback(async () => {
-    if (!pubkey) {
-      setProducts([])
-      setCategories([])
-      setLoading(false)
-      return
-    }
+  /**
+   * Read relays: the merchant's local edits win over both NIP-65 and the
+   * defaults, so removing a relay does not see it reappear on the next load.
+   */
+  const readUrls = React.useMemo(
+    () =>
+      dedupeRelays([
+        ...relayEntries.filter((e) => e.read).map((e) => e.url),
+        ...DEFAULT_RELAYS,
+      ]),
+    [relayEntries]
+  )
 
-    // Locally-edited relay list wins over both NIP-65 and the defaults, so a
-    // merchant who just removed a relay doesn't see it reappear on refresh.
-    const stored = readStoredRelays()
-    const baseEntries = stored ?? relayEntriesRef.current
-    const readUrls = dedupeRelays([
-      ...baseEntries.filter((e) => e.read).map((e) => e.url),
-      ...DEFAULT_RELAYS,
-    ])
+  const catalogQuery = useQuery({
+    queryKey: qk.catalog(pubkey ?? ""),
+    queryFn: () => readCatalog(pubkey!, readUrls),
+    enabled: !!pubkey,
+    ...CACHE.catalog,
+  })
 
-    const events = await queryEvents(
-      [
-        {
-          kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
-          authors: [pubkey],
-        },
-        { kinds: [KINDS.DELETION], authors: [pubkey] },
-        { kinds: [KINDS.RELAY_LIST], authors: [pubkey] },
-      ],
-      readUrls
-    )
+  const loading = catalogQuery.isPending && !!pubkey
+  /** A refresh running over data already on screen — drives the sync badge. */
+  const syncing = catalogQuery.isFetching && !catalogQuery.isPending
 
-    const deletions = buildDeletionIndex(events)
-    const live = events.filter((e) => {
-      const coord = coordinateOf(e)
-      return !coord || (deletions.get(coord) ?? -1) < e.created_at
-    })
+  const published = catalogQuery.data?.snapshot ?? EMPTY_SNAPSHOT
 
-    const addressable = latestByAddress(live.filter((e) => e.kind >= 30000))
-
-    const nextProducts: Product[] = []
-    const nextCategories: Category[] = []
-    for (const e of addressable) {
-      if (e.kind === KINDS.PRODUCT || e.kind === KINDS.PRODUCT_DRAFT) {
-        const r = parseProductEvent(e)
-        if (r.ok) nextProducts.push(r.value)
-      } else if (e.kind === KINDS.CATEGORY) {
-        const r = parseCategoryEvent(e, pubkey)
-        if (r.ok) nextCategories.push(r.value)
-      }
-    }
-
-    nextCategories.sort(
-      (a, b) => a.order - b.order || a.name.localeCompare(b.name, "es-AR")
-    )
-
-    setProducts(nextProducts)
-    setCategories(nextCategories)
-
-    // Only adopt the published NIP-65 list when there is no local edit yet.
-    if (!stored) {
-      const relayEvent = live
-        .filter((e) => e.kind === KINDS.RELAY_LIST)
-        .sort((a, b) => b.created_at - a.created_at)[0]
-      if (relayEvent) {
-        setRelayEntriesState(
-          mergeWithDefaults(parseRelayListEvent(relayEvent), DEFAULT_RELAYS)
-        )
-      }
-    } else {
-      setRelayEntriesState(stored)
-    }
-
-    setLoading(false)
-  }, [pubkey])
-
+  const publishedRef = React.useRef(published)
   React.useEffect(() => {
-    // Deferred: load() flips `loading` synchronously, and a sync setState in
-    // an effect body causes a cascading render.
-    const id = setTimeout(() => void load(), 0)
-    return () => clearTimeout(id)
-  }, [load])
+    publishedRef.current = published
+  }, [published])
+
+  const changes = React.useMemo(
+    () => (pubkey ? diffCatalog(published, draft, pubkey) : EMPTY_DIFF),
+    [published, draft, pubkey]
+  )
 
   /**
-   * Reconcile against relays after writes settle.
+   * Move one entity from the draft into the published baseline.
    *
-   * Debounced hard: a burst of edits would otherwise trigger one full catalog
-   * refetch each, and the optimistic state is already correct in the meantime.
+   * Writes straight into the query cache rather than a second piece of state,
+   * so "what the relays have" lives in exactly one place. Called only when an
+   * event actually landed, which is what leaves a FAILED item still badged as
+   * unsaved instead of optimistically pretending it went out.
+   */
+  const advancePublished = React.useCallback(
+    (mutate: (prev: CatalogSnapshot) => CatalogSnapshot) => {
+      if (!pubkey) return
+      queryClient.setQueryData<CatalogRead>(qk.catalog(pubkey), (old) => ({
+        relayList: old?.relayList ?? null,
+        snapshot: mutate(old?.snapshot ?? EMPTY_SNAPSHOT),
+      }))
+    },
+    [queryClient, pubkey]
+  )
+
+  /**
+   * Adopt the freshly-read catalog into the draft — but NEVER over unsaved
+   * work. A background refetch that silently threw away half an hour of edits
+   * would be unforgivable, and these refetches happen on a timer the merchant
+   * never asked for.
+   */
+  React.useEffect(() => {
+    if (!pubkey || !catalogQuery.data) return
+    const incoming = catalogQuery.data.snapshot
+    setDraft((current) =>
+      current === EMPTY_SNAPSHOT ||
+      diffCatalog(publishedRef.current, current, pubkey).count === 0
+        ? incoming
+        : current
+    )
+  }, [catalogQuery.data, pubkey])
+
+  // Only adopt the published NIP-65 list when there is no local edit yet.
+  React.useEffect(() => {
+    const list = catalogQuery.data?.relayList
+    if (!list || readStoredRelays()) return
+    // Deferred: a synchronous setState in an effect body cascades a render.
+    const id = setTimeout(
+      () => setRelayEntriesState(mergeWithDefaults(list, DEFAULT_RELAYS)),
+      0
+    )
+    return () => clearTimeout(id)
+  }, [catalogQuery.data])
+
+  const refresh = React.useCallback(async () => {
+    await catalogQuery.refetch()
+  }, [catalogQuery])
+
+  /**
+   * Warn before losing staged work.
+   *
+   * Only for the hard exits a router guard cannot see — tab close, reload,
+   * external navigation.
+   */
+  React.useEffect(() => {
+    if (changes.count === 0) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener("beforeunload", onBeforeUnload)
+    return () => window.removeEventListener("beforeunload", onBeforeUnload)
+  }, [changes.count])
+
+  /**
+   * Pull the truth back from relays a few seconds after a write settles.
+   *
+   * Debounced hard: a burst of saves would otherwise trigger one full refetch
+   * each, and the optimistic state is already correct in the meantime.
    */
   const reconcileTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleReconcile = React.useCallback(() => {
     if (reconcileTimer.current) clearTimeout(reconcileTimer.current)
-    reconcileTimer.current = setTimeout(() => void load(), 4000)
-  }, [load])
+    reconcileTimer.current = setTimeout(() => void refresh(), 4000)
+  }, [refresh])
 
   React.useEffect(
     () => () => {
@@ -241,24 +362,95 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  // ── Draft mutations. None of these touch a relay. ───────────────────────
+
+  const saveProduct = React.useCallback(
+    (p: Product) => {
+      if (!pubkey) return
+      const withKey = { ...p, pubkey }
+      setDraft((prev) => {
+        const idx = prev.products.findIndex((x) => x.d === p.d)
+        const products =
+          idx === -1
+            ? [...prev.products, withKey]
+            : prev.products.map((x) => (x.d === p.d ? withKey : x))
+        return { ...prev, products }
+      })
+    },
+    [pubkey]
+  )
+
+  const deleteProduct = React.useCallback((p: Product) => {
+    setDraft((prev) => ({
+      ...prev,
+      products: prev.products.filter((x) => x.d !== p.d),
+    }))
+  }, [])
+
+  const saveCategory = React.useCallback((c: Category) => {
+    setDraft((prev) => {
+      const idx = prev.categories.findIndex((x) => x.d === c.d)
+      const categories = (
+        idx === -1 ? [...prev.categories, c] : prev.categories.map((x) => (x.d === c.d ? c : x))
+      ).sort(byOrderThenName)
+      return { ...prev, categories }
+    })
+  }, [])
+
+  const deleteCategory = React.useCallback(
+    (c: Category, reassign: "orphan" | "delete") => {
+      setDraft((prev) => {
+        const members = prev.products.filter((p) => p.categories.includes(c.slug))
+        const memberDs = new Set(members.map((p) => p.d))
+        return {
+          categories: prev.categories.filter((x) => x.d !== c.d),
+          products:
+            reassign === "delete"
+              ? prev.products.filter((p) => !memberDs.has(p.d))
+              : // Strip the slug: `t` is authoritative for membership, so it
+                // must stop pointing at a category that no longer exists.
+                prev.products.map((p) =>
+                  memberDs.has(p.d)
+                    ? { ...p, categories: p.categories.filter((s) => s !== c.slug) }
+                    : p
+                ),
+        }
+      })
+    },
+    []
+  )
+
+  const discardChanges = React.useCallback(() => {
+    setDraft(publishedRef.current)
+  }, [])
+
+  // ── Publishing ──────────────────────────────────────────────────────────
+
   /**
    * Hand a template to the background queue.
    *
-   * Returns immediately — callers have already applied their optimistic state
-   * change, so the merchant can keep working while this drains.
+   * `advance` runs only when the event actually landed on at least one relay.
+   * That is what moves an entity from `draft` into `published` and clears its
+   * badge — so a partial failure leaves exactly the failed items still marked
+   * as unsaved, which is the correct thing for the merchant to see.
    */
   const publish = React.useCallback(
-    (template: EventTemplate, label: string, trackId?: string) => {
+    (
+      template: EventTemplate,
+      label: string,
+      opts: { trackId?: string; advance?: () => void } = {}
+    ) => {
       if (!signer) return
-      if (trackId) markPending(trackId, true)
+      if (opts.trackId) markPending(opts.trackId, true)
 
       enqueue({
         label,
         template,
         sign: (t) => signer.signEvent(t),
         relays: writeRelays(relayEntriesRef.current),
-        onSettled: () => {
-          if (trackId) markPending(trackId, false)
+        onSettled: (report) => {
+          if (opts.trackId) markPending(opts.trackId, false)
+          if (report && report.ok.length > 0) opts.advance?.()
           scheduleReconcile()
         },
       })
@@ -266,41 +458,88 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     [signer, enqueue, markPending, scheduleReconcile]
   )
 
-  const saveProduct = React.useCallback(
-    (p: Product) => {
-      if (!pubkey) return
-      const previous = productsRef.current.find((x) => x.d === p.d)
-      const withKey = { ...p, pubkey }
+  const saveChanges = React.useCallback(() => {
+    if (!pubkey || !signer) return
 
-      // Optimistic upsert BEFORE signing, so the list and any navigation
-      // reflect the change instantly.
-      setProducts((prev) => {
-        const idx = prev.findIndex((x) => x.d === p.d)
-        if (idx === -1) return [...prev, withKey]
-        const next = [...prev]
-        next[idx] = withKey
-        return next
+    const before = publishedRef.current
+    const current = draftRef.current
+    const diff = diffCatalog(before, current, pubkey)
+    if (diff.count === 0) return
+
+    const slugToD = new Map(current.categories.map((c) => [c.slug, c.d]))
+
+    // Upserts first, deletions last: a category delete strips slugs off its
+    // members, and those member updates should land before the category
+    // coordinate disappears.
+    for (const [d, kind] of diff.products) {
+      if (kind === "deleted") continue
+      const p = current.products.find((x) => x.d === d)!
+      const previous = before.products.find((x) => x.d === d)
+
+      publish(buildProductEvent(p, slugToD, previous?.updatedAt), p.title || "Producto", {
+        trackId: d,
+        advance: () =>
+          advancePublished((prev) => ({
+            ...prev,
+            products: prev.products.some((x) => x.d === d)
+              ? prev.products.map((x) => (x.d === d ? p : x))
+              : [...prev.products, p],
+          })),
       })
 
-      const slugToD = new Map(categoriesRef.current.map((c) => [c.slug, c.d]))
-      publish(
-        buildProductEvent(withKey, slugToD, previous?.updatedAt),
-        p.title || "Producto",
-        p.d
-      )
-    },
-    [pubkey, publish]
-  )
+      /**
+       * Draft ↔ published is a KIND change, so it leaves the old coordinate
+       * alive.
+       *
+       * 30402 and 30403 are different addresses. Publishing a draft writes
+       * the 30402 but does nothing to the 30403 that is still sitting on
+       * every relay — the product exists twice forever, and any client that
+       * reads drafts sees a ghost of an older version. Observed: a product
+       * saved as a draft and then published had both coordinates live.
+       *
+       * The kind 5 goes out AFTER the new version above, so the worst case is
+       * a momentary double listing rather than a gap with nothing at all.
+       */
+      if (previous && previous.lifecycle !== p.lifecycle) {
+        const staleKind =
+          previous.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
+        publish(
+          {
+            kind: KINDS.DELETION,
+            created_at: nowSeconds(),
+            content: "Versión anterior del producto",
+            tags: [
+              ["a", coordinate(staleKind, pubkey, d)],
+              ["k", String(staleKind)],
+            ],
+          },
+          `Limpiar ${previous.lifecycle === "published" ? "publicado" : "borrador"} de ${p.title}`
+        )
+      }
+    }
 
-  const deleteProduct = React.useCallback(
-    (p: Product) => {
-      if (!pubkey) return
+    for (const [d, kind] of diff.categories) {
+      if (kind === "deleted") continue
+      const c = current.categories.find((x) => x.d === d)!
+      const previous = before.categories.find((x) => x.d === d)
+      publish(buildCategoryEvent(c, pubkey, previous?.updatedAt), c.name || "Categoría", {
+        trackId: d,
+        advance: () =>
+          advancePublished((prev) => ({
+            ...prev,
+            categories: (prev.categories.some((x) => x.d === d)
+              ? prev.categories.map((x) => (x.d === d ? c : x))
+              : [...prev.categories, c]
+            ).sort(byOrderThenName),
+          })),
+      })
+    }
 
-      setProducts((prev) => prev.filter((x) => x.d !== p.d))
-
-      const kind =
+    for (const [d, kind] of diff.products) {
+      if (kind !== "deleted") continue
+      const p = before.products.find((x) => x.d === d)!
+      const eventKind =
         p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
-      const coord = coordinate(kind, pubkey, p.d)
       const t = nowSeconds()
 
       // ORDER MATTERS. NIP-09 deletes every version up to AND INCLUDING the
@@ -313,12 +552,19 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           created_at: t,
           content: "Producto eliminado",
           tags: [
-            ["a", coord],
-            ["k", String(kind)],
+            ["a", coordinate(eventKind, pubkey, p.d)],
+            ["k", String(eventKind)],
           ],
         },
         `Borrar ${p.title}`,
-        p.d
+        {
+          trackId: d,
+          advance: () =>
+            advancePublished((prev) => ({
+              ...prev,
+              products: prev.products.filter((x) => x.d !== d),
+            })),
+        }
       )
 
       // Tombstone strictly AFTER the cutoff, so it survives for relays and
@@ -340,63 +586,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         },
         `Lápida de ${p.title}`
       )
-    },
-    [pubkey, publish]
-  )
+    }
 
-  const saveCategory = React.useCallback(
-    (c: Category) => {
-      if (!pubkey) return
-      const previous = categoriesRef.current.find((x) => x.d === c.d)
-
-      setCategories((prev) => {
-        const idx = prev.findIndex((x) => x.d === c.d)
-        const next = idx === -1 ? [...prev, c] : prev.map((x) => (x.d === c.d ? c : x))
-        return next.sort(
-          (a, b) => a.order - b.order || a.name.localeCompare(b.name, "es-AR")
-        )
-      })
-
-      publish(
-        buildCategoryEvent(c, pubkey, previous?.updatedAt),
-        c.name || "Categoría",
-        c.d
-      )
-    },
-    [pubkey, publish]
-  )
-
-  const deleteCategory = React.useCallback(
-    (c: Category, reassign: "orphan" | "delete") => {
-      if (!pubkey) return
-
-      const members = productsRef.current.filter((p) =>
-        p.categories.includes(c.slug)
-      )
-
-      setCategories((prev) => prev.filter((x) => x.d !== c.d))
-
-      if (reassign === "delete") {
-        for (const p of members) deleteProduct(p)
-      } else {
-        // Strip this slug and republish each member, so `t` — which is
-        // authoritative for membership — stops pointing at a category that no
-        // longer exists.
-        const slugToD = new Map(categoriesRef.current.map((x) => [x.slug, x.d]))
-        for (const p of members) {
-          const next = {
-            ...p,
-            categories: p.categories.filter((s) => s !== c.slug),
-          }
-          setProducts((prev) => prev.map((x) => (x.d === p.d ? next : x)))
-          publish(
-            buildProductEvent({ ...next, pubkey }, slugToD, p.updatedAt),
-            `Quitar categoría de ${p.title}`,
-            p.d
-          )
-        }
-      }
-
+    for (const [d, kind] of diff.categories) {
+      if (kind !== "deleted") continue
+      const c = before.categories.find((x) => x.d === d)!
       publish(
         {
           kind: KINDS.DELETION,
@@ -408,11 +602,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           ],
         },
         `Borrar ${c.name}`,
-        c.d
+        {
+          trackId: d,
+          advance: () =>
+            advancePublished((prev) => ({
+              ...prev,
+              categories: prev.categories.filter((x) => x.d !== d),
+            })),
+        }
       )
-    },
-    [pubkey, publish, deleteProduct]
-  )
+    }
+
+  }, [pubkey, signer, publish, advancePublished])
 
   const publishRelayList = React.useCallback(() => {
     if (!pubkey) return
@@ -426,29 +627,38 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const value = React.useMemo<CatalogContextValue>(
     () => ({
       loading,
-      products,
-      categories,
+      syncing,
+      products: draft.products,
+      categories: draft.categories,
       relayEntries,
+      changes,
+      saving,
       pending,
-      refresh: load,
+      refresh,
       saveProduct,
       deleteProduct,
       saveCategory,
       deleteCategory,
+      saveChanges,
+      discardChanges,
       setRelayEntries,
       publishRelayList,
     }),
     [
       loading,
-      products,
-      categories,
+      draft,
       relayEntries,
+      changes,
+      saving,
+      syncing,
       pending,
-      load,
+      refresh,
       saveProduct,
       deleteProduct,
       saveCategory,
       deleteCategory,
+      saveChanges,
+      discardChanges,
       setRelayEntries,
       publishRelayList,
     ]

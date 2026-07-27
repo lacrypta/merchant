@@ -3,6 +3,7 @@ import Link from "next/link"
 import { GridBackdrop } from "@/components/brand/grid-backdrop"
 import { SiteNavbar } from "@/components/shell/site-navbar"
 import { HandleSearchForm } from "@/components/storefront/handle-search-form"
+import { MyStoreCta } from "@/components/storefront/my-store-cta"
 
 export default function LandingPage() {
   return (
@@ -23,6 +24,10 @@ export default function LandingPage() {
             Publicá productos y servicios como eventos firmados con tu propia
             clave. Cualquier punto de venta los lee en vivo.
           </p>
+
+          {/* Only for someone already signed in — a client island on an
+              otherwise fully static landing page. */}
+          <MyStoreCta />
 
           <div className="mt-10 w-full max-w-[680px]">
             <HandleSearchForm />

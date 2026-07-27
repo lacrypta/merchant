@@ -1,11 +1,12 @@
 "use client"
 
-import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 
 import { KINDS } from "@/lib/domain/kinds"
 import { parseProfileEvent, type NostrProfile } from "@/lib/domain/profile"
 import { queryEvents } from "@/lib/nostr/backend"
 import { LOOKUP_RELAYS, dedupeRelays, DEFAULT_RELAYS } from "@/lib/nostr/relays"
+import { CACHE, qk } from "@/lib/query/keys"
 
 /**
  * NIP-05 verification state.
@@ -23,113 +24,72 @@ export interface ProfileResult {
   nip05State: Nip05State
 }
 
-/**
- * Shared across components so N avatars for one pubkey cost one query.
- *
- * ONLY successful lookups are cached. Caching a miss would mean one slow
- * relay round-trip pins that npub to its initials for the rest of the
- * session — and "no profile" is very often just "no answer yet".
- * `inflight` collapses concurrent callers onto a single query instead.
- */
-const profileCache = new Map<string, NostrProfile>()
-const inflight = new Map<string, Promise<NostrProfile | null>>()
-const nip05Cache = new Map<string, Nip05State>()
-
 async function fetchProfile(pubkey: string): Promise<NostrProfile | null> {
-  const cached = profileCache.get(pubkey)
-  if (cached) return cached
-
-  const existing = inflight.get(pubkey)
-  if (existing) return existing
-
-  const promise = (async () => {
-    // purplepag.es first: it is the de-facto kind-0 indexer and answers far
-    // more reliably than general-purpose relays for metadata.
-    const relays = dedupeRelays([...LOOKUP_RELAYS, ...DEFAULT_RELAYS])
-    const events = await queryEvents(
-      [{ kinds: [KINDS.METADATA], authors: [pubkey] }],
-      relays,
-      { timeoutMs: 8_000 }
-    )
-    const newest = events.sort((a, b) => b.created_at - a.created_at)[0]
-    if (!newest) return null
-    const parsed = parseProfileEvent(newest)
-    profileCache.set(pubkey, parsed)
-    return parsed
-  })().finally(() => inflight.delete(pubkey))
-
-  inflight.set(pubkey, promise)
-  return promise
+  // purplepag.es first: it is the de-facto kind-0 indexer and answers far
+  // more reliably than general-purpose relays for metadata.
+  const relays = dedupeRelays([...LOOKUP_RELAYS, ...DEFAULT_RELAYS])
+  const events = await queryEvents(
+    [{ kinds: [KINDS.METADATA], authors: [pubkey] }],
+    relays,
+    { timeoutMs: 8_000, label: "Perfil (kind 0)" }
+  )
+  const newest = events.sort((a, b) => b.created_at - a.created_at)[0]
+  return newest ? parseProfileEvent(newest) : null
 }
 
+async function fetchNip05(address: string, pubkey: string): Promise<Nip05State> {
+  try {
+    const res = await fetch(`/api/nip05?address=${encodeURIComponent(address)}`, {
+      cache: "no-store",
+    })
+    const data = (await res.json()) as { pubkey?: string | null }
+    if (!res.ok) return "unreachable"
+    // A claim only counts once the DOMAIN maps it back to this exact pubkey.
+    // Anything else is shown without a check mark.
+    return data.pubkey?.toLowerCase() === pubkey.toLowerCase()
+      ? "verified"
+      : "mismatch"
+  } catch {
+    return "unreachable"
+  }
+}
+
+/**
+ * A merchant's display name, avatar and verified handle.
+ *
+ * Persisted, so the forty avatars on a busy screen paint from disk on reload
+ * and cost zero relay round trips until they go stale. That is the single
+ * most visible part of local-first here: names and faces used to blink in
+ * seconds after everything else had already rendered.
+ */
 export function useNostrProfile(pubkey: string | null): ProfileResult {
-  const [profile, setProfile] = React.useState<NostrProfile | null>(() =>
-    pubkey ? (profileCache.get(pubkey) ?? null) : null
-  )
-  const [loading, setLoading] = React.useState(
-    () => !!pubkey && !profileCache.has(pubkey)
-  )
-  const [nip05State, setNip05State] = React.useState<Nip05State>(() =>
-    pubkey ? (nip05Cache.get(pubkey) ?? "none") : "none"
-  )
+  const profileQuery = useQuery({
+    queryKey: qk.profile(pubkey ?? ""),
+    queryFn: () => fetchProfile(pubkey!),
+    enabled: !!pubkey,
+    ...CACHE.profile,
+    // A missing kind-0 is very often "no answer yet" rather than "no
+    // profile", so a null result must not be cached as long as a real one.
+    staleTime: (q) => (q.state.data ? CACHE.profile.staleTime : 0),
+  })
 
-  React.useEffect(() => {
-    let cancelled = false
+  const profile = profileQuery.data ?? null
+  const claimed = profile?.nip05
 
-    // Everything runs inside the async IIFE, including the no-pubkey reset:
-    // a synchronous setState in an effect body cascades a render.
-    void (async () => {
-      if (!pubkey) {
-        if (cancelled) return
-        setProfile(null)
-        setLoading(false)
-        setNip05State("none")
-        return
-      }
+  const nip05Query = useQuery({
+    queryKey: qk.nip05(claimed ?? "", pubkey ?? ""),
+    queryFn: () => fetchNip05(claimed!, pubkey!),
+    enabled: !!claimed && !!pubkey,
+    ...CACHE.nip05,
+  })
 
-      if (!profileCache.has(pubkey)) setLoading(true)
-      const found = await fetchProfile(pubkey)
-      if (cancelled) return
-      setProfile(found)
-      setLoading(false)
+  const nip05State: Nip05State = !claimed
+    ? "none"
+    : (nip05Query.data ?? "checking")
 
-      const claimed = found?.nip05
-      if (!claimed) {
-        setNip05State("none")
-        return
-      }
-
-      const known = nip05Cache.get(pubkey)
-      if (known) {
-        setNip05State(known)
-        return
-      }
-
-      setNip05State("checking")
-      try {
-        const res = await fetch(
-          `/api/nip05?address=${encodeURIComponent(claimed)}`,
-          { cache: "no-store" }
-        )
-        const data = (await res.json()) as { pubkey?: string | null }
-        // A claim only counts once the DOMAIN maps it back to this exact
-        // pubkey. Anything else is shown without a check mark.
-        const state: Nip05State = !res.ok
-          ? "unreachable"
-          : data.pubkey?.toLowerCase() === pubkey.toLowerCase()
-            ? "verified"
-            : "mismatch"
-        nip05Cache.set(pubkey, state)
-        if (!cancelled) setNip05State(state)
-      } catch {
-        if (!cancelled) setNip05State("unreachable")
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [pubkey])
-
-  return { profile, loading, nip05State }
+  return {
+    profile,
+    loading: profileQuery.isPending && !!pubkey,
+    nip05State,
+  }
 }

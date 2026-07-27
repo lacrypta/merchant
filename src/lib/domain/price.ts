@@ -89,7 +89,13 @@ export function formatAmount(price: Price): string {
  */
 export function formatPrice(amount: number, currency: string): string {
   const isSat = currency === "SAT"
+  // Whole amounts show no decimals (ARS 5.100, not ARS 5.100,00 — pesos are
+  // rarely priced to the centavo); anything fractional shows exactly two.
+  // Without the minimum, a converted total lands as "2.618,2" — a single
+  // trailing decimal, which does not read as money in any locale.
+  const fractional = !isSat && !Number.isInteger(amount)
   const n = new Intl.NumberFormat("es-AR", {
+    minimumFractionDigits: fractional ? 2 : 0,
     maximumFractionDigits: isSat ? 0 : 2,
   }).format(amount)
 

@@ -114,13 +114,13 @@ export function AccountMenu() {
         </Button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-72">
+      <DropdownMenuContent align="end" className="w-72 [&_[data-slot=dropdown-menu-item]]:text-sm">
         <DropdownMenuLabel className="font-normal">
           <div className="flex items-center gap-3">
-            <NostrAvatar pubkey={pubkey} npub={state.npub} size={40} />
+            <NostrAvatar pubkey={pubkey} npub={state.npub} size={44} />
             <div className="min-w-0">
-              <p className="truncate font-semibold">{label}</p>
-              <p className="text-xs text-muted-foreground">
+              <p className="truncate text-base font-semibold">{label}</p>
+              <p className="text-sm text-muted-foreground">
                 {state.method === "nip07" ? "Extensión" : "Firmante remoto"}
               </p>
             </div>
@@ -131,8 +131,8 @@ export function AccountMenu() {
           <>
             <DropdownMenuSeparator />
             <div className="px-2 py-1.5">
-              <p className="mb-1 text-xs text-muted-foreground">NIP-05</p>
-              <p className="flex items-start gap-1.5 text-sm break-all">
+              <p className="mb-1 text-sm text-muted-foreground">NIP-05</p>
+              <p className="flex items-start gap-1.5 text-base break-all">
                 {verified ? (
                   <BadgeCheck
                     className="mt-0.5 size-4 shrink-0 text-primary"
@@ -146,7 +146,7 @@ export function AccountMenu() {
                 )}
                 <span>{profile.nip05}</span>
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-sm text-muted-foreground">
                 {nip05State === "verified"
                   ? "El dominio confirma esta clave."
                   : nip05State === "checking"
@@ -160,10 +160,6 @@ export function AccountMenu() {
         ) : null}
 
         <DropdownMenuSeparator />
-        <div className="px-2 py-1.5">
-          <p className="mb-1 text-xs text-muted-foreground">Tu npub</p>
-          <p className="numeric text-xs break-all">{state.npub}</p>
-        </div>
 
         <DropdownMenuItem
           onSelect={(e) => {
