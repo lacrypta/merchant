@@ -32,7 +32,11 @@ import {
 import { nextCreatedAt, nowSeconds } from "@/lib/nostr/created-at"
 import { queryEvents } from "@/lib/nostr/backend"
 import { CACHE, qk } from "@/lib/query/keys"
-import { readRelayEntries, writeRelayEntries } from "@/lib/nostr/relay-prefs"
+import {
+  readRelayEntries,
+  useRelayPrefs,
+  writeRelayEntries,
+} from "@/lib/nostr/relay-prefs"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 import { coordinate, coordinateOf } from "@/lib/nostr/tags"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
@@ -205,8 +209,28 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const pubkey = state.status === "ready" ? state.pubkey : null
 
   const [draft, setDraft] = React.useState<CatalogSnapshot>(EMPTY_SNAPSHOT)
-  const [relayEntries, setRelayEntriesState] = React.useState<RelayEntry[]>(() =>
-    mergeWithDefaults([], DEFAULT_RELAYS)
+  /**
+   * Relays come from the SHARED record, not a local copy.
+   *
+   * A private copy meant the navbar relay panel could switch a relay off
+   * while this provider kept publishing to it — and, worse, the copy was
+   * seeded from the defaults and never hydrated, so a merchant's saved relay
+   * settings were silently ignored on every load.
+   *
+   * `useRelayPrefs()` returns [] on the server and on the first client paint,
+   * which merges to exactly the defaults the server rendered with.
+   */
+  const storedRelays = useRelayPrefs()
+  const [nip65Relays, setNip65Relays] = React.useState<RelayEntry[]>([])
+  const relayEntries = React.useMemo(
+    // Three LAYERS, weakest first: defaults < the merchant's published NIP-65
+    // list < this browser's saved record. Layering rather than replacing,
+    // because the saved record can be a single entry — switching one relay off
+    // in the navbar panel writes exactly one — and treating that as the whole
+    // list made the merchant's own NIP-65 relays vanish from the publish set
+    // the moment they touched the switch.
+    () => mergeWithDefaults([...nip65Relays, ...storedRelays], DEFAULT_RELAYS),
+    [storedRelays, nip65Relays]
   )
   const [pending, setPending] = React.useState<Set<string>>(new Set())
   /**
@@ -229,7 +253,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   }, [draft])
 
   const setRelayEntries = React.useCallback((entries: RelayEntry[]) => {
-    setRelayEntriesState(entries)
+    // No local setState: `relayEntries` derives from this write.
     writeRelayEntries(entries)
   }, [])
 
@@ -310,10 +334,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     const list = catalogQuery.data?.relayList
     if (!list || readStoredRelays()) return
     // Deferred: a synchronous setState in an effect body cascades a render.
-    const id = setTimeout(
-      () => setRelayEntriesState(mergeWithDefaults(list, DEFAULT_RELAYS)),
-      0
-    )
+    const id = setTimeout(() => setNip65Relays(list), 0)
     return () => clearTimeout(id)
   }, [catalogQuery.data])
 

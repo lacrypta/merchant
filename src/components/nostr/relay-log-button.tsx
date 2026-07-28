@@ -146,7 +146,7 @@ function RelayLogDialog({
                   <Switch
                     checked={on}
                     onCheckedChange={(v) => setRelayEnabled(relay, v)}
-                    aria-label={`${on ? "Dejar de leer de" : "Leer de"} ${relay}`}
+                    aria-label={`${on ? "Dejar de usar" : "Usar"} ${relay}`}
                   />
                   <span
                     aria-hidden
@@ -233,12 +233,13 @@ function RelayLogDialog({
           Y un relay sin datos tampoco es un error: no todos guardan todo.
           <br />
           <br />
-          El interruptor deja de leer de ese relay en{" "}
-          <b className="text-foreground">este navegador</b> y es el mismo ajuste
-          que «Leer» en Ajustes → Relays. No toca la publicación: para eso está
-          «Escribir». Las tiendas públicas se arman en el servidor, con la lista
-          de relays del servidor, así que este ajuste no las cambia — por eso un
-          relay apagado puede seguir apareciendo ahí con datos.
+          El interruptor deja de usar ese relay en{" "}
+          <b className="text-foreground">este navegador</b>: no se lee ni se
+          publica ahí. Es el mismo registro que Ajustes → Relays, donde podés
+          separar «Leer» de «Escribir». Las tiendas públicas se arman en el
+          servidor, con la lista de relays del servidor, así que este ajuste no
+          las cambia — por eso un relay apagado puede seguir apareciendo ahí
+          con datos.
         </p>
       </ResponsiveDialogContent>
     </ResponsiveDialog>

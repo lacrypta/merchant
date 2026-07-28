@@ -83,43 +83,60 @@ export function readRelayEntries(): RelayEntry[] {
   return read()
 }
 
-/** Is this relay allowed for reads? Unknown relays default to allowed. */
+/**
+ * Is this relay in use at all? Unknown relays default to in-use.
+ *
+ * "Off" is BOTH flags down, not `read === false` — a relay set write-only in
+ * Ajustes is still very much in use, and reporting it as off would invite the
+ * merchant to switch it "on" and silently change what it does.
+ */
 export function isRelayEnabled(url: string, entries: readonly RelayEntry[]): boolean {
+  const n = normalizeRelayUrl(url) ?? url
+  const entry = entries.find((e) => e.url === n)
+  return entry ? entry.read || entry.write : true
+}
+
+/**
+ * May we READ from this relay? Distinct from `isRelayEnabled` on purpose: a
+ * write-only relay is in use but must not be queried.
+ */
+function canRead(url: string, entries: readonly RelayEntry[]): boolean {
   const n = normalizeRelayUrl(url) ?? url
   const entry = entries.find((e) => e.url === n)
   return entry ? entry.read : true
 }
 
 /**
- * Turn a relay's reads on or off.
+ * Stop using a relay entirely, or start again.
+ *
+ * Switching off clears reads AND writes: a relay you turned off must not keep
+ * receiving the merchant's catalog. Ajustes → Relays keeps the fine-grained
+ * Leer/Escribir pair; this one switch is the coarse "use it or don't".
+ *
+ * Switching back on restores the relay's DEFAULT write-ness rather than
+ * whatever it was before, because the off state does not record it. The one
+ * case where that matters is an indexer like purplepag.es, which rejects
+ * product kinds outright — and `isReadOnlyByDefault` already keeps it
+ * read-only. A relay the merchant had hand-set to read-only in Ajustes will
+ * come back writable; that is the documented cost of a single switch.
  *
  * A relay not yet in the record gets materialised as a manual entry, so
  * switching off one of the defaults actually persists instead of silently
- * falling back to "unknown ⇒ allowed" on the next read.
+ * falling back to "unknown ⇒ in use" on the next read.
  */
 export function setRelayEnabled(url: string, enabled: boolean): void {
   const n = normalizeRelayUrl(url) ?? url
+  const next = enabled
+    ? { read: true, write: !isReadOnlyByDefault(n) }
+    : { read: false, write: false }
   const entries = read()
-  const existing = entries.find((e) => e.url === n)
 
-  if (existing) {
-    write(entries.map((e) => (e.url === n ? { ...e, read: enabled } : e)))
+  if (entries.some((e) => e.url === n)) {
+    write(entries.map((e) => (e.url === n ? { ...e, ...next } : e)))
     return
   }
 
-  write([
-    ...entries,
-    {
-      url: n,
-      read: enabled,
-      // Publishing is a SEPARATE switch in Ajustes → Relays. Deriving it from
-      // this one would quietly stop the merchant's catalog reaching a relay
-      // they only wanted to stop reading from — and re-enabling would turn
-      // writing back on for one they had deliberately set read-only.
-      write: !isReadOnlyByDefault(n),
-      source: "manual" as const,
-    },
-  ])
+  write([...entries, { url: n, ...next, source: "manual" as const }])
 }
 
 function subscribe(fn: () => void): () => void {
@@ -160,7 +177,7 @@ export function useRelayPrefs(): RelayEntry[] {
 export function enabledRelays(urls: readonly string[]): string[] {
   if (typeof window === "undefined") return [...urls]
   const entries = read()
-  const kept = urls.filter((u) => isRelayEnabled(u, entries))
+  const kept = urls.filter((u) => canRead(u, entries))
   return kept.length > 0 ? kept : [...urls]
 }
 
