@@ -17,6 +17,9 @@ export const qk = {
 
   /** The merchant's own catalog, as published on relays. */
   catalog: (pubkey: string) => ["catalog", pubkey] as const,
+
+  /** Zap receipts paid to one merchant, projected into their order book. */
+  orders: (pubkey: string) => ["orders", pubkey] as const,
 } as const
 
 /**
@@ -37,4 +40,6 @@ export const CACHE = {
   nip05: { staleTime: 60 * 60_000, gcTime: 7 * 24 * 60 * 60_000 },
   /** The merchant's own catalog — refetch on every visit, keep for a week. */
   catalog: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
+  /** Receipts are append-only; refresh them on each visit, retain history locally. */
+  orders: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
 } as const

@@ -4,6 +4,7 @@ import * as React from "react"
 import { Loader2 } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
+import { ProductImageUpload } from "@/components/products/product-image-upload"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -12,7 +13,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { CURRENCIES, formatPrice, type Currency } from "@/lib/domain/price"
 import { productFormSchema } from "@/lib/domain/product-schema"
-import type { Product, Visibility } from "@/lib/domain/product"
+import type { Product, ProductImage, Visibility } from "@/lib/domain/product"
 import { cn } from "@/lib/utils"
 
 type FieldErrors = Partial<Record<string, string>>
@@ -60,7 +61,6 @@ export function ProductForm({
   )
 
   const [title, setTitle] = React.useState(base.title)
-  const [summary, setSummary] = React.useState(base.summary ?? "")
   const [description, setDescription] = React.useState(base.description)
   const [amount, setAmount] = React.useState(
     base.price ? String(base.price.amount) : ""
@@ -80,9 +80,12 @@ export function ProductForm({
         ? [defaultCategory]
         : []
   )
-  const [imageUrl, setImageUrl] = React.useState(base.images[0]?.url ?? "")
+  const [image, setImage] = React.useState<ProductImage | null>(
+    base.images[0] ?? null
+  )
+  const [uploadingImage, setUploadingImage] = React.useState(false)
   const [errors, setErrors] = React.useState<FieldErrors>({})
-  const [saving, setSaving] = React.useState<null | "draft" | "publish">(null)
+  const [saving, setSaving] = React.useState(false)
 
   const numericAmount = Number(amount.replace(",", "."))
 
@@ -92,10 +95,18 @@ export function ProductForm({
     )
   }
 
-  function submit(lifecycle: "published" | "draft") {
+  function submit() {
+    if (uploadingImage) {
+      setErrors((current) => ({
+        ...current,
+        form: "Esperá a que termine de subir la imagen.",
+      }))
+      return
+    }
+
     const parsed = productFormSchema.safeParse({
       title,
-      summary: summary || undefined,
+      summary: undefined,
       description,
       amount: Number.isFinite(numericAmount) ? numericAmount : undefined,
       currency,
@@ -104,7 +115,7 @@ export function ProductForm({
       visibility,
       status: "active" as const,
       categories: selected,
-      imageUrl: imageUrl || "",
+      imageUrl: image?.url ?? "",
     })
 
     if (!parsed.success) {
@@ -118,23 +129,21 @@ export function ProductForm({
     }
 
     setErrors({})
-    setSaving(lifecycle === "draft" ? "draft" : "publish")
+    setSaving(true)
 
     const v = parsed.data
     const product: Product = {
       ...base,
-      lifecycle,
+      lifecycle: "published",
       status: v.status,
       title: v.title,
-      summary: v.summary,
+      summary: base.summary,
       description: v.description,
       price: { amount: v.amount, currency: v.currency },
       stock: v.trackStock ? v.stock : null,
       visibility: v.visibility,
       categories: v.categories,
-      images: v.imageUrl
-        ? [{ url: v.imageUrl, width: 256, height: 256, order: 0 }]
-        : [],
+      images: v.imageUrl && image ? [{ ...image, order: 0 }] : [],
       pubkey,
     }
 
@@ -148,7 +157,7 @@ export function ProductForm({
       setErrors({
         form: e instanceof Error ? e.message : "No pudimos guardar el producto.",
       })
-      setSaving(null)
+      setSaving(false)
     }
   }
 
@@ -156,11 +165,31 @@ export function ProductForm({
     <form
       onSubmit={(e) => {
         e.preventDefault()
-        submit("published")
+        submit()
       }}
       className="grid gap-8 md:grid-cols-[minmax(0,1fr)_auto]"
       noValidate
     >
+      <div className="sticky top-0 z-20 col-span-full -mx-4 flex min-h-16 items-center justify-end border-b border-border bg-popover/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-popover/85">
+        <Button type="submit" disabled={saving || uploadingImage}>
+          {saving ? (
+            <>
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              Firmando…
+            </>
+          ) : uploadingImage ? (
+            <>
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              Subiendo imagen…
+            </>
+          ) : existing ? (
+            "Guardar cambios"
+          ) : (
+            "Publicar"
+          )}
+        </Button>
+      </div>
+
       <div className="space-y-6">
         <Field label="Nombre" error={errors.title} htmlFor="p-title" required>
           <Input
@@ -170,16 +199,6 @@ export function ProductForm({
             placeholder="Fernet con Coca"
             aria-invalid={!!errors.title}
             maxLength={120}
-          />
-        </Field>
-
-        <Field label="Bajada" error={errors.summary} htmlFor="p-summary">
-          <Input
-            id="p-summary"
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            placeholder="Vaso de 500ml"
-            maxLength={200}
           />
         </Field>
 
@@ -214,22 +233,21 @@ export function ProductForm({
           />
         </Field>
 
-        <Field label="Imagen (URL)" error={errors.imageUrl} htmlFor="p-img">
-          <Input
-            id="p-img"
-            value={imageUrl}
-            onChange={(e) => setImageUrl(e.target.value)}
-            placeholder="https://blossom.band/…"
-            inputMode="url"
-            autoCapitalize="off"
-            spellCheck={false}
-            aria-invalid={!!errors.imageUrl}
+        <div className="space-y-2">
+          <Label>Imagen</Label>
+          <ProductImageUpload
+            value={image}
+            onChange={(nextImage) => {
+              setImage(nextImage)
+              setErrors((current) => ({
+                ...current,
+                imageUrl: undefined,
+              }))
+            }}
+            onBusyChange={setUploadingImage}
+            validationError={errors.imageUrl}
           />
-          <p className="mt-1 text-xs text-muted-foreground">
-            La subida con recorte a Blossom llega en el próximo paso; por ahora
-            pegá una URL.
-          </p>
-        </Field>
+        </div>
 
         <div className="space-y-3">
           <Label>Categorías</Label>
@@ -324,31 +342,6 @@ export function ProductForm({
           </p>
         ) : null}
 
-        <div className="flex flex-wrap gap-3 border-t border-border pt-5">
-          <Button type="submit" disabled={saving !== null}>
-            {saving === "publish" ? (
-              <>
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-                Firmando…
-              </>
-            ) : existing ? (
-              "Guardar cambios"
-            ) : (
-              "Publicar"
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={saving !== null}
-            onClick={() => submit("draft")}
-          >
-            {saving === "draft" ? "Guardando…" : "Guardar borrador"}
-          </Button>
-          <Button type="button" variant="ghost" onClick={onDone}>
-            Cancelar
-          </Button>
-        </div>
       </div>
 
       <aside className="hidden md:block">
@@ -356,10 +349,10 @@ export function ProductForm({
           <p className="text-sm text-muted-foreground">Así se va a ver</p>
           <article className="w-[200px] overflow-hidden rounded-xl border border-border bg-card">
             <div className="relative aspect-square bg-surface-3">
-              {imageUrl ? (
+              {image ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={imageUrl}
+                  src={image.url}
                   alt=""
                   className="size-full object-cover"
                 />
@@ -371,9 +364,9 @@ export function ProductForm({
               <p className="line-clamp-2 text-sm leading-tight font-semibold">
                 {title || "Nombre del producto"}
               </p>
-              {summary ? (
+              {base.summary ? (
                 <p className="line-clamp-1 text-xs text-muted-foreground">
-                  {summary}
+                  {base.summary}
                 </p>
               ) : null}
               <p className="numeric text-price text-primary">

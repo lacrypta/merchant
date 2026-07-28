@@ -1,4 +1,4 @@
-import { Package, Settings, type LucideIcon } from "lucide-react"
+import { ClipboardList, Package, Settings, type LucideIcon } from "lucide-react"
 
 export type NavItem = {
   href: string
@@ -14,5 +14,6 @@ export type NavItem = {
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/products", label: "Catálogo", icon: Package },
+  { href: "/orders", label: "Órdenes", icon: ClipboardList },
   { href: "/settings", label: "Ajustes", icon: Settings },
 ] as const
