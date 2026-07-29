@@ -26,14 +26,21 @@ export function isPrivateAddress(rawIp: string): boolean {
   if (version === 0) return true // unparseable -> refuse
 
   if (version === 4) {
-    const [a, b] = ip.split(".").map(Number) as [number, number, number, number]
+    const [a, b, c] = ip.split(".").map(Number) as [number, number, number, number]
     if (a === 0) return true // 0.0.0.0/8
     if (a === 10) return true // private
     if (a === 127) return true // loopback
     if (a === 169 && b === 254) return true // link-local / cloud metadata
     if (a === 172 && b >= 16 && b <= 31) return true // private
     if (a === 192 && b === 168) return true // private
-    if (a === 192 && b === 0) return true // IETF protocol assignments
+    /**
+     * Only two /24s inside 192.0.0.0/16 are reserved: 192.0.0.0/24 (IETF
+     * protocol assignments) and 192.0.2.0/24 (TEST-NET-1). The rest is
+     * ordinary public space — 192.0.66.0/24 is Automattic's, which is where a
+     * WordPress.com-hosted WooCommerce store answers from. Blocking the whole
+     * /16 made every one of those unreachable.
+     */
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return true
     if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
     if (a >= 224) return true // multicast, reserved, broadcast
     return false
