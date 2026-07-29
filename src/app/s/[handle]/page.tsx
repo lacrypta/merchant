@@ -10,6 +10,10 @@ import { EditStoreButton } from "@/components/storefront/edit-store-button"
 import { CartAside } from "@/components/cart/cart-aside"
 import { HandleSearchForm } from "@/components/storefront/handle-search-form"
 import { ProductRow } from "@/components/storefront/product-row"
+import {
+  StorefrontSearch,
+  type SearchEntry,
+} from "@/components/storefront/storefront-search"
 import { TickerChip } from "@/components/ui/ticker-chip"
 import { toCartItem } from "@/lib/domain/cart"
 import { getStorefront } from "@/lib/server/storefront"
@@ -19,6 +23,9 @@ export const runtime = "nodejs"
 export const revalidate = 60
 
 type Params = Promise<{ handle: string }>
+
+/** Filtering one product is not filtering. Everything above that gets a box. */
+const SEARCH_MIN_PRODUCTS = 2
 
 export async function generateMetadata({
   params,
@@ -69,6 +76,22 @@ export default async function StorefrontPage({ params }: { params: Params }) {
     store.profile?.name,
     toNpub(resolved.pubkey)
   )
+
+  /**
+   * One short string per product for the search box — NOT the products.
+   *
+   * Built here so the row itself stays a Server Component: what crosses the
+   * wire is a name, a summary and a SKU, never the markdown description.
+   */
+  const searchEntries: SearchEntry[] = store.groups.flatMap((g) => {
+    const cat = g.category?.d ?? "__uncategorised"
+    const catName = g.category?.name ?? ""
+    return g.products.map((p) => ({
+      d: p.d,
+      cat,
+      text: [p.title, p.summary ?? "", p.sku ?? "", catName].join(" "),
+    }))
+  })
 
   return (
     <>
@@ -149,44 +172,55 @@ export default async function StorefrontPage({ params }: { params: Params }) {
                   description={`${displayName} no tiene productos activos en los relays que consultamos.`}
                 />
               ) : (
-                <div className="space-y-8">
-                  {store.groups.map((group) => {
-                    const key = group.category?.d ?? "__uncategorised"
-                    const name = group.category?.name ?? "Sin categoría"
-                    return (
-                      <section key={key}>
-                        <h2
-                          id={group.category?.slug ?? "sin-categoria"}
-                          className="text-h3 mb-3 scroll-mt-20"
-                        >
-                          {group.category?.emoji ? (
-                            <span aria-hidden className="mr-2">
-                              {group.category.emoji}
-                            </span>
-                          ) : null}
-                          {name}
-                          <span className="numeric ml-2 align-middle text-base font-medium text-muted-foreground">
-                            {group.products.length}
-                          </span>
-                        </h2>
+                <>
+                  {/* Hidden only for a one-product store, where there is
+                      nothing to filter down to. */}
+                  {searchEntries.length >= SEARCH_MIN_PRODUCTS ? (
+                    <StorefrontSearch entries={searchEntries} />
+                  ) : null}
 
-                        <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-                          {group.products.map((p) => (
-                            <li key={p.d}>
-                              <ProductRow
-                                product={p}
-                                showImage={showImage}
-                                action={
-                                  <AddToCartControl item={toCartItem(p)} />
-                                }
-                              />
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                    )
-                  })}
-                </div>
+                  <div className="space-y-8">
+                    {store.groups.map((group) => {
+                      const key = group.category?.d ?? "__uncategorised"
+                      const name = group.category?.name ?? "Sin categoría"
+                      return (
+                        <section key={key} data-group={key}>
+                          <h2
+                            id={group.category?.slug ?? "sin-categoria"}
+                            className="text-h3 mb-3 scroll-mt-20"
+                          >
+                            {group.category?.emoji ? (
+                              <span aria-hidden className="mr-2">
+                                {group.category.emoji}
+                              </span>
+                            ) : null}
+                            {name}
+                            <span
+                              data-group-count=""
+                              className="numeric ml-2 align-middle text-base font-medium text-muted-foreground"
+                            >
+                              {group.products.length}
+                            </span>
+                          </h2>
+
+                          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
+                            {group.products.map((p) => (
+                              <li key={p.d} data-product={p.d}>
+                                <ProductRow
+                                  product={p}
+                                  showImage={showImage}
+                                  action={
+                                    <AddToCartControl item={toCartItem(p)} />
+                                  }
+                                />
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </div>
 

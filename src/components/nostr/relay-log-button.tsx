@@ -59,7 +59,10 @@ export function RelayLogButton() {
           )}
         />
         <Radio className="size-4" aria-hidden />
-        <span className="numeric text-xs">
+        {/* The dot already carries the state; the digits are detail. On a
+            375px phone this pill plus the login button overflowed the navbar
+            and made every page scroll sideways. */}
+        <span className="numeric hidden text-xs sm:inline">
           {summary.connected}/{summary.total}
         </span>
       </Button>
