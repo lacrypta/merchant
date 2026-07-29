@@ -32,6 +32,15 @@ export interface Product {
   status: NipStatus
   title: string
   summary?: string
+  /**
+   * Stock-keeping unit. The join key with external systems (WooCommerce, an
+   * ERP, a label printer) — `d` cannot serve that role because it is a UUID we
+   * generate and the other side already has its own reference.
+   *
+   * Optional: NIP-99 has no SKU, most listings on the relays have none, and a
+   * merchant selling empanadas at a fair never needs one.
+   */
+  sku?: string
   /** Markdown -> event.content */
   description: string
   /**
@@ -67,6 +76,7 @@ const KNOWN_TAGS = new Set([
   "title",
   "alt",
   "published_at",
+  "sku",
   "price",
   "type",
   "visibility",
@@ -83,6 +93,40 @@ const KNOWN_TAGS = new Set([
 export type ParseResult<T> =
   | { ok: true; value: T }
   | { ok: false; reason: string }
+
+/** Longest SKU we accept. WooCommerce stores it in postmeta with no hard cap. */
+export const MAX_SKU_LENGTH = 100
+
+/**
+ * Trim a SKU, or drop it entirely.
+ *
+ * Returns undefined rather than "" so an empty SKU emits NO tag: an empty
+ * `["sku", ""]` on the wire would match nothing and read as a real value.
+ */
+export function normalizeSku(raw: string | undefined): string | undefined {
+  const sku = raw?.trim()
+  return sku ? sku.slice(0, MAX_SKU_LENGTH) : undefined
+}
+
+/**
+ * Is this SKU already used by another product in the catalog?
+ *
+ * Compared case-insensitively, which is STRICTER than WooCommerce (it treats
+ * `ABC` and `abc` as distinct). Being stricter is the safe direction: we may
+ * refuse a SKU Woo would have accepted, but we never let a merchant create two
+ * references that are indistinguishable when read aloud or off a label.
+ */
+export function isSkuTaken(
+  sku: string,
+  products: readonly Product[],
+  exceptD?: string
+): boolean {
+  const needle = sku.trim().toLowerCase()
+  if (!needle) return false
+  return products.some(
+    (p) => p.d !== exceptD && p.sku?.trim().toLowerCase() === needle
+  )
+}
 
 function asVisibility(v: string | undefined): Visibility | undefined {
   return v === "hidden" || v === "on-sale" || v === "pre-order" ? v : undefined
@@ -158,6 +202,11 @@ export function productEventBody(
     ["alt", altForProduct(p)], // NIP-31; not in NIP-99, but Shopstr emits it
     ["published_at", String(publishedAt)],
   ]
+
+  // Not in NIP-99. Emitted only when set, so a catalog without SKUs stays
+  // byte-identical to what it published before this field existed.
+  const sku = normalizeSku(p.sku)
+  if (sku) tags.push(["sku", sku])
 
   if (p.price) {
     tags.push([
@@ -241,6 +290,7 @@ export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
       status: tagValue(e, "status") === "sold" ? "sold" : "active",
       title: tagValue(e, "title") ?? "(sin título)",
       summary: tagValue(e, "summary"),
+      sku: normalizeSku(tagValue(e, "sku")),
       description: e.content,
       price,
       stock: stockRaw !== undefined ? (toInt(stockRaw) ?? 0) : null,
