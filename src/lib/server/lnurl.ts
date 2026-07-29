@@ -5,7 +5,7 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js"
 import { request } from "undici"
 
 import { looksLikeInvoice } from "@/lib/domain/bolt11"
-import { MAX_RESPONSE_BYTES, ssrfSafeAgent } from "@/lib/server/ssrf"
+import { readJsonBody, ssrfSafeAgent } from "@/lib/server/ssrf"
 
 /**
  * LUD-16 / LUD-06 / LUD-21 client, server-side only.
@@ -61,23 +61,7 @@ async function getJson(url: string): Promise<unknown | null> {
     return null
   }
 
-  let size = 0
-  const chunks: Buffer[] = []
-  for await (const chunk of res.body) {
-    const buf = Buffer.from(chunk)
-    size += buf.length
-    if (size > MAX_RESPONSE_BYTES) {
-      res.body.destroy()
-      return null
-    }
-    chunks.push(buf)
-  }
-
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
-  } catch {
-    return null
-  }
+  return readJsonBody(res.body)
 }
 
 const num = (v: unknown): number | null =>

@@ -103,5 +103,54 @@ export function ssrfSafeAgent(): Agent {
   return cachedAgent
 }
 
-/** Cap on the response body we're willing to read (64 KB). */
+/** Default cap on the response body we're willing to read (64 KB). */
 export const MAX_RESPONSE_BYTES = 64 * 1024
+
+/** Minimal shape of an undici response body. Keeps this file free of route types. */
+interface ReadableBody extends AsyncIterable<unknown> {
+  destroy(): void
+}
+
+/**
+ * Read a capped JSON body, or null.
+ *
+ * Every outbound call in this app talks to a host somebody else controls, so
+ * "read until the stream ends" is a denial-of-service waiting to happen: a
+ * hostile server can stream forever and pin a Node process. The cap has to be
+ * enforced WHILE reading, not after — checking `content-length` proves nothing
+ * because the header is the sender's claim.
+ *
+ * Returns null on overflow, on invalid JSON, and on a non-object payload, so
+ * a host answering an HTML error page is indistinguishable from one that is
+ * down. Callers get one failure mode instead of three.
+ */
+export async function readJsonBody(
+  body: ReadableBody,
+  maxBytes: number = MAX_RESPONSE_BYTES
+): Promise<unknown> {
+  let size = 0
+  const chunks: Buffer[] = []
+
+  try {
+    for await (const chunk of body) {
+      const buf = Buffer.from(chunk as Uint8Array)
+      size += buf.length
+      if (size > maxBytes) {
+        body.destroy()
+        return null
+      }
+      chunks.push(buf)
+    }
+  } catch {
+    // A truncated or reset stream is just an unreachable host.
+    body.destroy()
+    return null
+  }
+
+  try {
+    const json: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    return typeof json === "object" && json !== null ? json : null
+  } catch {
+    return null
+  }
+}
