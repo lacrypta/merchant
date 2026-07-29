@@ -71,8 +71,30 @@ function slugMap(categories: readonly Category[]): Map<string, string> {
  * what makes "I renamed a category, so its products' `a` tags moved" show up
  * as a real change on those products.
  */
-function productBody(p: Product, snapshot: CatalogSnapshot): EventBody {
-  return productEventBody(p, slugMap(snapshot.categories), p.publishedAt)
+function productBody(
+  p: Product,
+  snapshot: CatalogSnapshot,
+  publishedAt = p.publishedAt
+): EventBody {
+  return productEventBody(p, slugMap(snapshot.categories), publishedAt)
+}
+
+/**
+ * `published_at` is the FIRST publish time, and 0 is a placeholder meaning
+ * "never published".
+ *
+ * A product authored or imported here carries 0 until its first event lands.
+ * Once the relays hand a copy back, that copy has the real timestamp while the
+ * draft still has 0 — and comparing a placeholder against a real value
+ * reported the product as modified FOREVER, with saving unable to clear it.
+ * Importing 31 products turned that into a permanent "31 cambios sin
+ * publicar".
+ *
+ * Resolving to the published value is also exactly what a republish must do:
+ * first-publish time survives every later edit.
+ */
+function publishedAtFor(p: Product, before: Product | undefined): number {
+  return p.publishedAt || before?.publishedAt || 0
 }
 
 export function diffCatalog(
@@ -90,7 +112,12 @@ export function diffCatalog(
     const before = publishedProducts.get(p.d)
     if (!before) {
       products.set(p.d, "new")
-    } else if (!sameBody(productBody(before, published), productBody(p, draft))) {
+    } else if (
+      !sameBody(
+        productBody(before, published),
+        productBody(p, draft, publishedAtFor(p, before))
+      )
+    ) {
       products.set(p.d, "modified")
     }
   }

@@ -553,15 +553,47 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       const p = current.products.find((x) => x.d === d)!
       const previous = before.products.find((x) => x.d === d)
 
-      publish(buildProductEvent(p, slugToD, previous?.updatedAt), p.title || "Producto", {
+      /**
+       * `published_at` is the FIRST publish time and must survive every edit.
+       *
+       * A product authored or imported here carries 0 until its first event
+       * lands, and the builder then writes `created_at` into the tag. If the
+       * draft is left at 0, two things break: the relay copy comes back with
+       * a real timestamp and the product reads as modified forever, and the
+       * NEXT save rewrites `published_at` to a fresh time, quietly moving the
+       * product's birthday. So resolve it here and remember it.
+       */
+      const resolved: Product = {
+        ...p,
+        publishedAt: p.publishedAt || previous?.publishedAt || 0,
+      }
+      const template = buildProductEvent(resolved, slugToD, previous?.updatedAt)
+      const settled: Product = {
+        ...resolved,
+        publishedAt: resolved.publishedAt || template.created_at,
+      }
+
+      publish(template, p.title || "Producto", {
         trackId: d,
-        advance: () =>
+        advance: () => {
           advancePublished((prev) => ({
             ...prev,
             products: prev.products.some((x) => x.d === d)
-              ? prev.products.map((x) => (x.d === d ? p : x))
-              : [...prev.products, p],
-          })),
+              ? prev.products.map((x) => (x.d === d ? settled : x))
+              : [...prev.products, settled],
+          }))
+          // Patch ONLY the timestamp, and only while it is still the
+          // placeholder — the merchant may have edited this product while the
+          // event was in flight, and overwriting the draft would lose that.
+          setDraft((prev) => ({
+            ...prev,
+            products: prev.products.map((x) =>
+              x.d === d && !x.publishedAt
+                ? { ...x, publishedAt: settled.publishedAt }
+                : x
+            ),
+          }))
+        },
       })
 
       /**

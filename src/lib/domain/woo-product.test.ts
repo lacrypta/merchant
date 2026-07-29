@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 
 import type { WooProduct } from "@/lib/woo/client"
-import type { Product } from "./product"
+import { buildProductEvent, parseProductEvent, type Product } from "./product"
+import { diffCatalog } from "./catalog-diff"
+import { __resetCreatedAtState } from "@/lib/nostr/created-at"
 import {
   applyImport,
   deriveSku,
@@ -11,6 +13,10 @@ import {
 } from "./woo-product"
 
 const PUBKEY = "a".repeat(64)
+
+beforeEach(() => {
+  __resetCreatedAtState()
+})
 
 const woo = (over: Partial<WooProduct> = {}): WooProduct => ({
   id: 10,
@@ -339,5 +345,77 @@ describe("applyImport", () => {
     )
     const res = await applyImport(plan, deps())
     expect(res.products).toHaveLength(1)
+  })
+})
+
+describe("round trip: import → publish → read back → diff", () => {
+  /**
+   * The invariant that "31 cambios sin publicar" violated: publishing an
+   * imported product and reading it back off the relays must produce NO
+   * pending change. Anything asymmetric between the builder and the parser
+   * shows up here instead of as a badge the merchant cannot clear.
+   */
+  const roundTrip = (w: WooProduct, storeCurrency = "ARS") => {
+    const [c] = planImport([w], [], () => "d-1")
+    const imported = wooToProduct(w, {
+      storeCurrency,
+      d: c!.d,
+      sku: c!.sku,
+      pubkey: PUBKEY,
+      knownCategorySlugs: new Set(["comida"]),
+    })
+
+    // What actually goes on the wire, then what a relay hands back.
+    const event = buildProductEvent(imported, new Map())
+    const parsed = parseProductEvent({
+      ...event,
+      id: "f".repeat(64),
+      pubkey: PUBKEY,
+      sig: "s".repeat(128),
+    })
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("unparseable")
+
+    const snapshot = (p: Product) => ({ products: [p], categories: [] })
+    return {
+      parsed: parsed.value,
+      diff: diffCatalog(snapshot(parsed.value), snapshot(imported), PUBKEY),
+    }
+  }
+
+  it("shows no pending change for a fully-populated product", () => {
+    expect(roundTrip(woo()).diff.count).toBe(0)
+  })
+
+  it("shows no pending change for a product with no image and no stock", () => {
+    expect(
+      roundTrip(woo({ images: [], manage_stock: false, stock_quantity: null })).diff
+        .count
+    ).toBe(0)
+  })
+
+  it("shows no pending change for a product with no price", () => {
+    expect(roundTrip(woo({ regular_price: "", price: "" })).diff.count).toBe(0)
+  })
+
+  it("shows no pending change for a derived SKU", () => {
+    expect(roundTrip(woo({ sku: "" })).diff.count).toBe(0)
+  })
+
+  it("shows no pending change for a sold-out untracked product", () => {
+    expect(
+      roundTrip(woo({ manage_stock: false, stock_status: "outofstock" })).diff.count
+    ).toBe(0)
+  })
+
+  it("keeps the image URL and reports no size it does not know", () => {
+    const { parsed } = roundTrip(woo())
+    expect(parsed.images[0]?.url).toBe("https://tienda.example/pancho.jpg")
+    expect(parsed.images[0]?.width).toBe(0)
+  })
+
+  it("preserves a decimal price through the round trip", () => {
+    const { parsed } = roundTrip(woo({ regular_price: "1234.56" }))
+    expect(parsed.price).toEqual({ amount: 1234.56, currency: "ARS" })
   })
 })

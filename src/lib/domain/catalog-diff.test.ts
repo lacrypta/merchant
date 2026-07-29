@@ -216,3 +216,41 @@ describe("diffCatalog", () => {
     expect(d.categories.get("bebidas-d")).toBe("deleted")
   })
 })
+
+describe("a freshly published product stops showing as changed", () => {
+  /**
+   * The bug: a product created here starts with `publishedAt: 0` — nothing has
+   * been published yet, so there is no first-publish time. The builder writes
+   * `published_at = created_at` for it. When the relays hand that event back,
+   * the published copy carries the real timestamp while the draft still has 0,
+   * the two `published_at` tags differ, and the product is reported as
+   * modified forever. Importing 31 products made it "31 cambios sin publicar"
+   * that no amount of saving would clear.
+   */
+  const snapshot = (products: Product[]): CatalogSnapshot => ({
+    products,
+    categories: [],
+  })
+
+  it("is not modified once the relay copy carries a real published_at", () => {
+    const draft = product({ publishedAt: 0 })
+    const fromRelay = product({ publishedAt: 1_753_000_000 })
+
+    const diff = diffCatalog(snapshot([fromRelay]), snapshot([draft]), PUBKEY)
+    expect(diff.count).toBe(0)
+  })
+
+  it("still reports a real edit on a product with a placeholder timestamp", () => {
+    const draft = product({ publishedAt: 0, title: "Nombre nuevo" })
+    const fromRelay = product({ publishedAt: 1_753_000_000 })
+
+    expect(diffCatalog(snapshot([fromRelay]), snapshot([draft]), PUBKEY).count).toBe(1)
+  })
+
+  it("still reports a genuine published_at change between two real timestamps", () => {
+    const draft = product({ publishedAt: 1_600_000_000 })
+    const fromRelay = product({ publishedAt: 1_753_000_000 })
+
+    expect(diffCatalog(snapshot([fromRelay]), snapshot([draft]), PUBKEY).count).toBe(1)
+  })
+})
