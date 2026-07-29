@@ -14,10 +14,12 @@
 
 import { RelayPool } from "applesauce-relay"
 import { NostrConnectSigner, ExtensionSigner } from "applesauce-signers"
+import { Permission } from "applesauce-signers/helpers"
 
 import { DEFAULT_RELAYS } from "@/lib/nostr/relays"
 import type {
   EventTemplate,
+  Nip44Port,
   SignedEvent,
   SignerMethod,
   SignerPort,
@@ -41,7 +43,29 @@ export const SIGNING_KINDS = [
   30402, // product
   30403, // product draft
   30405, // category
+  30078, // NIP-78 app data (WooCommerce config, encrypted)
 ]
+
+/**
+ * Everything we ask a remote signer to grant, at connect time.
+ *
+ * `buildSigningPermissions()` emits ONLY `get_public_key` and
+ * `sign_event:<kind>` — NIP-44 encryption is a separate grant. Without asking
+ * for it up front, the first `nip44Encrypt` either raises a second approval
+ * prompt in the middle of a flow or is refused outright, depending on the
+ * bunker.
+ *
+ * Sessions connected before this existed granted the older list. We pass the
+ * new one on restore, so a bunker that re-prompts will ask once more; one that
+ * does not will fail the encrypt, which the caller degrades on.
+ */
+function connectPermissions(): string[] {
+  return [
+    ...NostrConnectSigner.buildSigningPermissions(SIGNING_KINDS),
+    Permission.Nip44Encrypt,
+    Permission.Nip44Decrypt,
+  ]
+}
 
 let pool: RelayPool | undefined
 let globalsReady = false
@@ -75,8 +99,20 @@ class ApplesauceSigner implements SignerPort {
     private readonly inner: {
       getPublicKey(): Promise<string>
       signEvent(t: EventTemplate): Promise<unknown>
+      nip44?: Nip44Port
     }
   ) {}
+
+  /**
+   * A live getter, never a snapshot.
+   *
+   * `ExtensionSigner.nip44` reads `window.nostr?.nip44` on every access, so an
+   * extension that injects after we construct the signer would be reported as
+   * incapable forever if this were read once in the constructor.
+   */
+  get nip44(): Nip44Port | undefined {
+    return this.inner.nip44
+  }
 
   getPublicKey(): Promise<string> {
     return this.inner.getPublicKey()
@@ -113,7 +149,7 @@ export async function loginWithExtension(): Promise<LoginResult> {
 export async function loginWithBunkerUri(uri: string): Promise<LoginResult> {
   ensureNostrGlobals()
   const signer = await NostrConnectSigner.fromBunkerURI(uri, {
-    permissions: NostrConnectSigner.buildSigningPermissions(SIGNING_KINDS),
+    permissions: connectPermissions(),
   })
   const pubkey = await signer.getPublicKey()
   return {
@@ -137,7 +173,7 @@ export function startNostrConnect(metadata: {
 }): NostrConnectHandle {
   ensureNostrGlobals()
 
-  const permissions = NostrConnectSigner.buildSigningPermissions(SIGNING_KINDS)
+  const permissions = connectPermissions()
   const signer = new NostrConnectSigner({ relays: [NOSTR_CONNECT_RELAY] })
   const controller = new AbortController()
 
@@ -168,7 +204,7 @@ export async function restoreFromNbunksec(nbunksec: string): Promise<LoginResult
   // NOTE: fromNbunksec takes NO `signer` option — the client keypair is
   // rebuilt from the blob's own clientKey.
   const signer = await NostrConnectSigner.fromNbunksec(nbunksec, {
-    permissions: NostrConnectSigner.buildSigningPermissions(SIGNING_KINDS),
+    permissions: connectPermissions(),
   })
   const pubkey = await signer.getPublicKey()
   return { pubkey, signer: new ApplesauceSigner("nip46", signer), nbunksec }
