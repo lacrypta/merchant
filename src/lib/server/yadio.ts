@@ -3,7 +3,7 @@ import "server-only"
 import { request } from "undici"
 
 import { satPriceFromUnitsPerBtc, type RateSnapshot } from "@/lib/domain/rates"
-import { MAX_RESPONSE_BYTES, ssrfSafeAgent } from "@/lib/server/ssrf"
+import { readJsonBody, ssrfSafeAgent } from "@/lib/server/ssrf"
 
 /**
  * The BTC price oracle.
@@ -88,20 +88,8 @@ async function fetchSnapshot(): Promise<RateSnapshot | null> {
       return null
     }
 
-    let size = 0
-    const chunks: Buffer[] = []
-    for await (const chunk of res.body) {
-      const buf = Buffer.from(chunk)
-      size += buf.length
-      if (size > MAX_RESPONSE_BYTES) {
-        res.body.destroy()
-        return null
-      }
-      chunks.push(buf)
-    }
-
-    const json: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-    if (typeof json !== "object" || json === null) return null
+    const json = await readJsonBody(res.body)
+    if (!json) return null
 
     const body = json as { BTC?: Record<string, unknown>; timestamp?: unknown }
     if (typeof body.BTC !== "object" || body.BTC === null) return null

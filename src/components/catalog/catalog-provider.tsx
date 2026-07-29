@@ -18,6 +18,12 @@ import {
 } from "@/lib/domain/catalog-diff"
 import { KINDS } from "@/lib/domain/kinds"
 import {
+  WOO_CONFIG_D,
+  buildAppDataEvent,
+  isOurWooConfig,
+} from "@/lib/domain/woo-config"
+import { WOO_SYNC_D } from "@/lib/domain/woo-sync-state"
+import {
   buildProductEvent,
   parseProductEvent,
   type Product,
@@ -71,6 +77,11 @@ interface CatalogContextValue {
   pending: Set<string>
   refresh: () => Promise<void>
   saveProduct: (p: Product) => void
+  /**
+   * Upsert many at once. One state update instead of N — an import of 200
+   * products through saveProduct would re-render the board 200 times.
+   */
+  saveProducts: (list: Product[]) => void
   deleteProduct: (p: Product) => void
   saveCategory: (c: Category) => void
   deleteCategory: (c: Category, reassign: "orphan" | "delete") => void
@@ -80,11 +91,22 @@ interface CatalogContextValue {
   discardChanges: () => void
   setRelayEntries: (entries: RelayEntry[]) => void
   publishRelayList: () => void
+  /** Raw NIP-78 events for our own `d` tags. Still encrypted. */
+  appData: SignedEvent[]
+  /**
+   * Publish a NIP-78 blob under one of OUR `d` tags.
+   *
+   * `ciphertext` must already be sealed — this cannot check that, so the one
+   * call path that builds it is the one that encrypts.
+   */
+  publishAppData: (d: string, ciphertext: string, label: string) => void
 }
 
 const CatalogContext = React.createContext<CatalogContextValue | null>(null)
 
 const EMPTY_SNAPSHOT: CatalogSnapshot = { products: [], categories: [] }
+/** Stable reference: a fresh [] each render would re-run every consumer memo. */
+const EMPTY_APP_DATA: SignedEvent[] = []
 
 /**
  * The merchant's saved relay record, or null if they have never touched it.
@@ -144,6 +166,14 @@ interface CatalogRead {
   snapshot: CatalogSnapshot
   /** The merchant's published NIP-65 list, if they have one. */
   relayList: RelayEntry[] | null
+  /**
+   * Raw NIP-78 app-data events, still encrypted.
+   *
+   * Carried on this read rather than a separate one: it is one more filter on
+   * a round trip that already happens, and decrypting needs the signer, which
+   * this function does not have.
+   */
+  appData: SignedEvent[]
 }
 
 /**
@@ -166,9 +196,17 @@ async function readCatalog(
       },
       { kinds: [KINDS.DELETION], authors: [pubkey] },
       { kinds: [KINDS.RELAY_LIST], authors: [pubkey] },
+      {
+        kinds: [KINDS.APP_DATA],
+        authors: [pubkey],
+        // Scoped to OUR `d` tags: kind 30078 is shared by every app that
+        // stores per-user data, and pulling all of them would drag down
+        // unrelated blobs on every catalog load.
+        "#d": [WOO_CONFIG_D, WOO_SYNC_D],
+      },
     ],
     readUrls,
-    { label: "Catálogo, borrados y relays" }
+    { label: "Catálogo, borrados, relays y config" }
   )
 
   const deletions = buildDeletionIndex(events)
@@ -199,6 +237,7 @@ async function readCatalog(
   return {
     snapshot: { products, categories },
     relayList: relayEvent ? parseRelayListEvent(relayEvent) : null,
+    appData: latestByAddress(live.filter((e) => e.kind === KINDS.APP_DATA)),
   }
 }
 
@@ -282,6 +321,10 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const syncing = catalogQuery.isFetching && !catalogQuery.isPending
 
   const published = catalogQuery.data?.snapshot ?? EMPTY_SNAPSHOT
+  const appData = React.useMemo(
+    () => catalogQuery.data?.appData ?? EMPTY_APP_DATA,
+    [catalogQuery.data]
+  )
 
   const publishedRef = React.useRef(published)
   React.useEffect(() => {
@@ -306,6 +349,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       if (!pubkey) return
       queryClient.setQueryData<CatalogRead>(qk.catalog(pubkey), (old) => ({
         relayList: old?.relayList ?? null,
+        appData: old?.appData ?? EMPTY_APP_DATA,
         snapshot: mutate(old?.snapshot ?? EMPTY_SNAPSHOT),
       }))
     },
@@ -396,6 +440,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             ? [...prev.products, withKey]
             : prev.products.map((x) => (x.d === p.d ? withKey : x))
         return { ...prev, products }
+      })
+    },
+    [pubkey]
+  )
+
+  const saveProducts = React.useCallback(
+    (list: Product[]) => {
+      if (!pubkey || list.length === 0) return
+      setDraft((prev) => {
+        const byD = new Map(prev.products.map((x) => [x.d, x]))
+        for (const p of list) byD.set(p.d, { ...p, pubkey })
+        return { ...prev, products: [...byD.values()] }
       })
     },
     [pubkey]
@@ -497,15 +553,47 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       const p = current.products.find((x) => x.d === d)!
       const previous = before.products.find((x) => x.d === d)
 
-      publish(buildProductEvent(p, slugToD, previous?.updatedAt), p.title || "Producto", {
+      /**
+       * `published_at` is the FIRST publish time and must survive every edit.
+       *
+       * A product authored or imported here carries 0 until its first event
+       * lands, and the builder then writes `created_at` into the tag. If the
+       * draft is left at 0, two things break: the relay copy comes back with
+       * a real timestamp and the product reads as modified forever, and the
+       * NEXT save rewrites `published_at` to a fresh time, quietly moving the
+       * product's birthday. So resolve it here and remember it.
+       */
+      const resolved: Product = {
+        ...p,
+        publishedAt: p.publishedAt || previous?.publishedAt || 0,
+      }
+      const template = buildProductEvent(resolved, slugToD, previous?.updatedAt)
+      const settled: Product = {
+        ...resolved,
+        publishedAt: resolved.publishedAt || template.created_at,
+      }
+
+      publish(template, p.title || "Producto", {
         trackId: d,
-        advance: () =>
+        advance: () => {
           advancePublished((prev) => ({
             ...prev,
             products: prev.products.some((x) => x.d === d)
-              ? prev.products.map((x) => (x.d === d ? p : x))
-              : [...prev.products, p],
-          })),
+              ? prev.products.map((x) => (x.d === d ? settled : x))
+              : [...prev.products, settled],
+          }))
+          // Patch ONLY the timestamp, and only while it is still the
+          // placeholder — the merchant may have edited this product while the
+          // event was in flight, and overwriting the draft would lose that.
+          setDraft((prev) => ({
+            ...prev,
+            products: prev.products.map((x) =>
+              x.d === d && !x.publishedAt
+                ? { ...x, publishedAt: settled.publishedAt }
+                : x
+            ),
+          }))
+        },
       })
 
       /**
@@ -636,6 +724,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
 
   }, [pubkey, signer, publish, advancePublished])
 
+  const publishAppData = React.useCallback(
+    (d: string, ciphertext: string, label: string) => {
+      if (!pubkey) return
+      const previous = appData.find((e) => isOurWooConfig(e, pubkey, d))
+      publish(
+        buildAppDataEvent(d, ciphertext, pubkey, previous?.created_at),
+        label
+      )
+    },
+    [pubkey, publish, appData]
+  )
+
   const publishRelayList = React.useCallback(() => {
     if (!pubkey) return
     const address = coordinate(KINDS.RELAY_LIST, pubkey, "")
@@ -657,6 +757,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       pending,
       refresh,
       saveProduct,
+      saveProducts,
       deleteProduct,
       saveCategory,
       deleteCategory,
@@ -664,6 +765,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      appData,
+      publishAppData,
     }),
     [
       loading,
@@ -675,6 +778,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       pending,
       refresh,
       saveProduct,
+      saveProducts,
       deleteProduct,
       saveCategory,
       deleteCategory,
@@ -682,6 +786,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      appData,
+      publishAppData,
     ]
   )
 

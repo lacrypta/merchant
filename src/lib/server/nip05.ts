@@ -2,7 +2,7 @@ import "server-only"
 
 import { request } from "undici"
 
-import { MAX_RESPONSE_BYTES, ssrfSafeAgent } from "@/lib/server/ssrf"
+import { readJsonBody, ssrfSafeAgent } from "@/lib/server/ssrf"
 
 /**
  * NIP-05 resolution, server-side.
@@ -57,27 +57,9 @@ export async function resolveNip05(address: string): Promise<Nip05Result | null>
     return null
   }
 
-  // Cap the body: a hostile domain can otherwise stream forever.
-  let size = 0
-  const chunks: Buffer[] = []
-  for await (const chunk of res.body) {
-    const buf = Buffer.from(chunk)
-    size += buf.length
-    if (size > MAX_RESPONSE_BYTES) {
-      res.body.destroy()
-      return null
-    }
-    chunks.push(buf)
-  }
+  const json = await readJsonBody(res.body)
+  if (!json) return null
 
-  let json: unknown
-  try {
-    json = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-  } catch {
-    return null
-  }
-
-  if (typeof json !== "object" || json === null) return null
   const names = (json as { names?: Record<string, string> }).names
   const pubkey = names?.[name]
   if (typeof pubkey !== "string" || !/^[0-9a-f]{64}$/i.test(pubkey)) return null

@@ -14,6 +14,12 @@ export const KINDS = {
   BLOSSOM_SERVERS: 10063,
   /** BUD-11 blossom authorization */
   BLOSSOM_AUTH: 24242,
+  /**
+   * NIP-78 arbitrary app data. Addressable, and shared by every app that
+   * uses it — the `d` tag is the only thing keeping us out of each other's
+   * way, so we only ever publish to a `d` we generated ourselves.
+   */
+  APP_DATA: 30078,
   /** NIP-99 classified listing — active */
   PRODUCT: 30402,
   /** NIP-99 classified listing — draft / inactive */

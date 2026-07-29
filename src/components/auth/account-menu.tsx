@@ -76,7 +76,10 @@ export function AccountMenu() {
           }}
         >
           <LogIn className="size-4" aria-hidden />
-          Ingresar con Nostr
+          {/* One word on a phone. The full label is 199px of a 375px screen,
+              and there is nothing else it could mean here. */}
+          <span className="sm:hidden">Ingresar</span>
+          <span className="hidden sm:inline">Ingresar con Nostr</span>
         </Button>
         <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} />
       </>

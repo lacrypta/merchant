@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { CURRENCIES } from "@/lib/domain/price"
+import { MAX_SKU_LENGTH } from "@/lib/domain/product"
 
 /**
  * Validation for products authored HERE.
@@ -17,6 +18,12 @@ export const productFormSchema = z
       .min(1, "Poné un nombre")
       .max(120, "Máximo 120 caracteres"),
     summary: z.string().trim().max(200, "Máximo 200 caracteres").optional(),
+    sku: z
+      .string()
+      .trim()
+      .max(MAX_SKU_LENGTH, `Máximo ${MAX_SKU_LENGTH} caracteres`)
+      .optional()
+      .or(z.literal("")),
     description: z.string().max(20_000).default(""),
     amount: z
       .number({ message: "Poné un precio" })

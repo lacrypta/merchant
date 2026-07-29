@@ -32,10 +32,25 @@ export interface Filter {
 
 export type SignerMethod = "nip07" | "nip46"
 
+/** NIP-44 v2 conversation encryption, as exposed by NIP-07 and NIP-46. */
+export interface Nip44Port {
+  encrypt(pubkey: string, plaintext: string): Promise<string>
+  decrypt(pubkey: string, ciphertext: string): Promise<string>
+}
+
 export interface SignerPort {
   readonly method: SignerMethod
   getPublicKey(): Promise<string>
   signEvent(template: EventTemplate): Promise<SignedEvent>
+  /**
+   * Absent when the signer cannot encrypt.
+   *
+   * Optional because the capability is genuinely asymmetric: NIP-46 always has
+   * it, while NIP-07 exposes it only if the extension implements it. Callers
+   * MUST branch on this rather than assume — the alternative is publishing a
+   * merchant's API credentials in the clear.
+   */
+  readonly nip44?: Nip44Port
 }
 
 /** Per-relay publish outcome. Publishing is NEVER a boolean. */

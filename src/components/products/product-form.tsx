@@ -13,7 +13,14 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { CURRENCIES, formatPrice, type Currency } from "@/lib/domain/price"
 import { productFormSchema } from "@/lib/domain/product-schema"
-import type { Product, ProductImage, Visibility } from "@/lib/domain/product"
+import {
+  isSkuTaken,
+  normalizeSku,
+  MAX_SKU_LENGTH,
+  type Product,
+  type ProductImage,
+  type Visibility,
+} from "@/lib/domain/product"
 import { cn } from "@/lib/utils"
 
 type FieldErrors = Partial<Record<string, string>>
@@ -53,7 +60,7 @@ export function ProductForm({
   /** Called once the write is queued — the dialog closes on this. */
   onDone: () => void
 }) {
-  const { categories, saveProduct } = useCatalog()
+  const { categories, products, saveProduct } = useCatalog()
 
   const base = React.useMemo(
     () => existing ?? emptyProduct(pubkey),
@@ -61,6 +68,7 @@ export function ProductForm({
   )
 
   const [title, setTitle] = React.useState(base.title)
+  const [sku, setSku] = React.useState(base.sku ?? "")
   const [description, setDescription] = React.useState(base.description)
   const [amount, setAmount] = React.useState(
     base.price ? String(base.price.amount) : ""
@@ -104,8 +112,17 @@ export function ProductForm({
       return
     }
 
+    const cleanSku = normalizeSku(sku)
+    if (cleanSku && isSkuTaken(cleanSku, products, base.d)) {
+      // Not a zod refine: uniqueness needs the whole catalog, which the
+      // schema cannot see.
+      setErrors({ sku: "Ya hay otro producto con ese SKU." })
+      return
+    }
+
     const parsed = productFormSchema.safeParse({
       title,
+      sku,
       summary: undefined,
       description,
       amount: Number.isFinite(numericAmount) ? numericAmount : undefined,
@@ -137,6 +154,7 @@ export function ProductForm({
       lifecycle: "published",
       status: v.status,
       title: v.title,
+      sku: cleanSku,
       summary: base.summary,
       description: v.description,
       price: { amount: v.amount, currency: v.currency },
@@ -199,6 +217,24 @@ export function ProductForm({
             placeholder="Fernet con Coca"
             aria-invalid={!!errors.title}
             maxLength={120}
+          />
+        </Field>
+
+        <Field
+          label="SKU"
+          error={errors.sku}
+          htmlFor="p-sku"
+          hint="La referencia que comparte con WooCommerce u otro sistema. Opcional."
+        >
+          <Input
+            id="p-sku"
+            value={sku}
+            onChange={(e) => setSku(e.target.value)}
+            placeholder="EMP-001"
+            autoComplete="off"
+            aria-invalid={!!errors.sku}
+            maxLength={MAX_SKU_LENGTH}
+            className="numeric"
           />
         </Field>
 
@@ -386,12 +422,14 @@ function Field({
   label,
   htmlFor,
   error,
+  hint,
   required,
   children,
 }: {
   label: string
   htmlFor?: string
   error?: string
+  hint?: string
   required?: boolean
   children: React.ReactNode
 }) {
@@ -406,6 +444,8 @@ function Field({
         <p role="alert" className="text-sm text-danger">
           {error}
         </p>
+      ) : hint ? (
+        <p className="text-xs text-muted-foreground">{hint}</p>
       ) : null}
     </div>
   )
