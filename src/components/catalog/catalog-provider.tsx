@@ -77,6 +77,11 @@ interface CatalogContextValue {
   pending: Set<string>
   refresh: () => Promise<void>
   saveProduct: (p: Product) => void
+  /**
+   * Upsert many at once. One state update instead of N — an import of 200
+   * products through saveProduct would re-render the board 200 times.
+   */
+  saveProducts: (list: Product[]) => void
   deleteProduct: (p: Product) => void
   saveCategory: (c: Category) => void
   deleteCategory: (c: Category, reassign: "orphan" | "delete") => void
@@ -440,6 +445,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     [pubkey]
   )
 
+  const saveProducts = React.useCallback(
+    (list: Product[]) => {
+      if (!pubkey || list.length === 0) return
+      setDraft((prev) => {
+        const byD = new Map(prev.products.map((x) => [x.d, x]))
+        for (const p of list) byD.set(p.d, { ...p, pubkey })
+        return { ...prev, products: [...byD.values()] }
+      })
+    },
+    [pubkey]
+  )
+
   const deleteProduct = React.useCallback((p: Product) => {
     setDraft((prev) => ({
       ...prev,
@@ -708,6 +725,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       pending,
       refresh,
       saveProduct,
+      saveProducts,
       deleteProduct,
       saveCategory,
       deleteCategory,
@@ -728,6 +746,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       pending,
       refresh,
       saveProduct,
+      saveProducts,
       deleteProduct,
       saveCategory,
       deleteCategory,

@@ -18,8 +18,9 @@ export function MobileTabBar() {
       aria-label="Navegación inferior"
       className="safe-b fixed inset-x-0 bottom-0 z-30 flex h-14 items-stretch border-t border-border bg-background/95 backdrop-blur lg:hidden"
     >
-      {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-        const active = pathname === href || pathname.startsWith(`${href}/`)
+      {NAV_ITEMS.map(({ href, label, icon: Icon, match }) => {
+        const base = match ?? href
+          const active = pathname === base || pathname.startsWith(`${base}/`)
         return (
           <Link
             key={href}

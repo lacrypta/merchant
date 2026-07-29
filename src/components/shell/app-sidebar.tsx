@@ -19,8 +19,9 @@ export function AppSidebar() {
   return (
     <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-[240px] shrink-0 flex-col border-r border-border py-4 pl-4 lg:flex">
       <nav className="flex-1 space-y-1 pr-4" aria-label="Secciones">
-        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || pathname.startsWith(`${href}/`)
+        {NAV_ITEMS.map(({ href, label, icon: Icon, match }) => {
+          const base = match ?? href
+          const active = pathname === base || pathname.startsWith(`${base}/`)
           return (
             <Link
               key={href}

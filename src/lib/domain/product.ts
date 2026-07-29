@@ -233,7 +233,14 @@ export function productEventBody(
   }
 
   for (const img of [...p.images].sort((a, b) => a.order - b.order)) {
-    tags.push(["image", img.url, `${img.width}x${img.height}`, String(img.order)])
+    // Dimensions are OMITTED when unknown rather than written as "0x0".
+    // WooCommerce does not report them, and a made-up size is worse than no
+    // size: a client that trusts it lays out a 0-pixel box.
+    tags.push(
+      img.width > 0 && img.height > 0
+        ? ["image", img.url, `${img.width}x${img.height}`, String(img.order)]
+        : ["image", img.url]
+    )
   }
 
   // Tag ORDER encodes priority, and nostr preserves it cryptographically

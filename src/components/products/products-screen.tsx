@@ -16,6 +16,10 @@ import {
   type Group,
 } from "@/components/products/catalog-board"
 import { PageHeader } from "@/components/shell/page-header"
+import { Download } from "lucide-react"
+
+import { ImportDialog } from "@/components/woo/import-dialog"
+import { useWoo } from "@/components/woo/woo-provider"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,6 +51,7 @@ export function ProductsScreen() {
     deleteProduct,
     deleteCategory,
   } = useCatalog()
+  const { connection: wooConnection } = useWoo()
 
   const [query, setQuery] = React.useState("")
   const [filter, setFilter] = React.useState<StatusFilter>("todos")
@@ -54,6 +59,7 @@ export function ProductsScreen() {
     null
   )
   const [creatingCategory, setCreatingCategory] = React.useState(false)
+  const [importing, setImporting] = React.useState(false)
   const [categoryToDelete, setCategoryToDelete] = React.useState<Category | null>(
     null
   )
@@ -121,6 +127,14 @@ export function ProductsScreen() {
 
   const actions = (
     <div className="flex flex-wrap gap-2">
+      {/* Only with a live connection: a button that opens a dialog to say
+          "conectá tu tienda primero" is a dead end wearing a button. */}
+      {wooConnection ? (
+        <Button variant="ghost" onClick={() => setImporting(true)}>
+          <Download className="size-4" aria-hidden />
+          Importar productos
+        </Button>
+      ) : null}
       <AddCategoryButton onClick={() => setCreatingCategory(true)} />
       <Button
         onClick={() => {
@@ -335,6 +349,10 @@ export function ProductsScreen() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {wooConnection ? (
+        <ImportDialog open={importing} onOpenChange={setImporting} />
+      ) : null}
 
       {state.status === "ready" ? (
         <p className="mt-12 text-sm text-muted-foreground">
