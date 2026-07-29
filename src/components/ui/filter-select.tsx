@@ -58,10 +58,14 @@ function FilterSelect({
         sideOffset={6}
         className="min-w-[11.5rem] rounded-xl border-border-strong p-1.5 shadow-xl data-[position=popper]:h-auto data-[position=popper]:min-w-[var(--radix-select-trigger-width)]"
       >
-        <SelectLabel className="px-2.5 pt-1.5 pb-2 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase">
-          {label}
-        </SelectLabel>
+        {/* INSIDE the group, not beside it. Radix wires the label as the
+            group's accessible name, so its context consumer throws outright
+            when it renders anywhere else — which took the whole /orders screen
+            down, not just the dropdown. */}
         <SelectGroup className="p-0">
+          <SelectLabel className="px-2.5 pt-1.5 pb-2 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase">
+            {label}
+          </SelectLabel>
           {options.map((option) => (
             <SelectItem
               key={option.value}
