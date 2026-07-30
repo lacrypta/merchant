@@ -33,15 +33,11 @@ export const KINDS = {
   /** NIP-99 classified listing — active */
   PRODUCT: 30402,
   /**
-   * NIP-99 draft listing — written ONLY as the tombstone left behind when a
-   * product is deleted.
-   *
-   * This app has no draft products: everything it publishes is a live 30402.
-   * The kind survives here because a client that ignores kind 5 has to find
-   * *something* at the address saying the product is gone, and a hidden,
-   * sold-out draft is the least wrong thing to leave there.
+   * NIP-99 draft listing — RETIRED as a product state. Only written as
+   * deletion tombstones now; drafts left over from before the feature was
+   * removed are swept (kind 5 + tombstone) from the /products banner.
    */
-  PRODUCT_TOMBSTONE: 30403,
+  PRODUCT_DRAFT: 30403,
   /** GammaMarkets product collection — we use it as a category */
   CATEGORY: 30405,
 } as const

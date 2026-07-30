@@ -94,8 +94,8 @@ function isDeleted(e: SignedEvent, deletions: Map<string, number>): boolean {
 /**
  * Load a merchant's public catalog.
  *
- * Only kind:30402 that are active and not hidden appear — drafts (30403)
- * never do.
+ * Only kind:30402 that are active and not hidden appear — 30403 (tombstones
+ * and pre-removal legacy drafts) never does.
  */
 export async function loadStorefront(
   pubkey: string,

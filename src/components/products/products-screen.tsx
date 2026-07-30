@@ -50,6 +50,9 @@ export function ProductsScreen() {
     saveCategory,
     deleteProduct,
     deleteCategory,
+    legacyDrafts,
+    sweepLegacyDrafts,
+    saving,
   } = useCatalog()
   const { connection: wooConnection } = useWoo()
 
@@ -219,6 +222,26 @@ export function ProductsScreen() {
       />
 
       <UnsavedBar />
+
+      {legacyDrafts.length > 0 ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-sm text-warning">
+          <p>
+            El estado Borrador se eliminó de la app.{" "}
+            {legacyDrafts.length === 1
+              ? "Queda 1 borrador viejo"
+              : `Quedan ${legacyDrafts.length} borradores viejos`}{" "}
+            en tus relays.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={sweepLegacyDrafts}
+          >
+            Eliminarlos de los relays
+          </Button>
+        </div>
+      ) : null}
 
       {nothingAtAll ? (
         <EmptyState

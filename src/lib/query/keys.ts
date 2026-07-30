@@ -31,6 +31,9 @@ export const qk = {
    * one that must never be served from the persisted cache — see CACHE.coupons.
    */
   coupons: (pubkey: string) => ["coupons", pubkey] as const,
+
+  /** Raw events this app published with the merchant's key — the /products/events inspector. */
+  events: (pubkey: string) => ["events", pubkey] as const,
 } as const
 
 /**
@@ -63,4 +66,6 @@ export const CACHE = {
    * without ever surviving a session.
    */
   coupons: { staleTime: 15_000, gcTime: 10 * 60_000 },
+  /** The inspector mirrors whatever relays hold right now; refetch each visit. */
+  events: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
 } as const

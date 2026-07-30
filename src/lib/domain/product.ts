@@ -253,6 +253,8 @@ export function productEventBody(
 }
 
 export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
+  // 30403 is no longer a product: since the draft feature was removed it only
+  // holds tombstones and pre-removal drafts, which the catalog read sweeps.
   if (e.kind !== KINDS.PRODUCT) {
     return { ok: false, reason: "wrong kind" }
   }
