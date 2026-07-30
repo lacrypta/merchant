@@ -286,12 +286,35 @@ export function ProductsScreen() {
             />
           </div>
 
-          {visible.length === 0 && query ? (
+          {visible.length === 0 && (query || filter !== "todos") ? (
+            /**
+             * The filter narrows too, and on its own it used to leave the board
+             * rendering nothing but category headers — a merchant with no hidden
+             * products clicked "Ocultos" and got a blank page that looked broken.
+             * Whatever is doing the narrowing is what the button clears.
+             */
             <EmptyState
-              title={`Sin resultados para «${query}»`}
+              title={
+                query
+                  ? `Sin resultados para «${query}»`
+                  : filter === "activos"
+                    ? "No tenés productos activos"
+                    : "No tenés productos ocultos"
+              }
+              description={
+                query && filter !== "todos"
+                  ? "Puede que el filtro de estado esté dejando afuera lo que buscás."
+                  : undefined
+              }
               action={
-                <Button variant="ghost" onClick={() => setQuery("")}>
-                  Limpiar búsqueda
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setQuery("")
+                    setFilter("todos")
+                  }}
+                >
+                  {query ? "Limpiar búsqueda" : "Ver todos"}
                 </Button>
               }
             />

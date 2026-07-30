@@ -76,6 +76,7 @@ export function CheckoutScreen({
     quote,
     priced,
     coupon,
+    applyCoupon,
     removeCoupon,
     rates,
     displayCurrency,
@@ -320,6 +321,19 @@ export function CheckoutScreen({
         }
 
         claimed = { ...activeCoupon, claimedAt: outcome.claimedAt }
+
+        /**
+         * Write it to the cart NOW, before the invoice request.
+         *
+         * The nonce is already spent at this point, and everything that would
+         * otherwise carry that fact — the order row — is minted several awaits
+         * later. If the LNURL call throws in between, or the shopper closes the
+         * tab, the cart survives in localStorage with an unclaimed-looking
+         * coupon and the next attempt re-claims it: the server answers
+         * "claimed", we call it spent, and a coupon this very browser paid for
+         * comes off the order.
+         */
+        applyCoupon(claimed)
       }
 
       // Mint the order (and therefore the order id) exactly once. Re-invoicing
@@ -739,6 +753,15 @@ async function claimCoupon(nonce: string): Promise<ClaimOutcome> {
         kind: "spent",
         message: "Ese cupón ya fue usado. Generá el pedido de nuevo.",
       }
+    }
+    // Terminal states the POST does not currently reach — it 410s on both — but
+    // the validating GET does, and a shopper stuck retrying a dead nonce is a
+    // worse failure than one told plainly the coupon is finished.
+    if (data.status === "expired") {
+      return { kind: "spent", message: "El cupón está vencido. Generá el pedido de nuevo." }
+    }
+    if (data.status === "voided") {
+      return { kind: "spent", message: "El cupón fue anulado. Generá el pedido de nuevo." }
     }
     return { kind: "unavailable" }
   } catch {

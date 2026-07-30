@@ -94,6 +94,27 @@ export class CouponApiError extends Error {
 }
 
 /**
+ * Every query failure, in a shape the screens can render.
+ *
+ * `instanceof CouponApiError` alone dropped the ones that never reached the
+ * server — a refused bunker prompt, an offline phone, a DNS hiccup — and the
+ * screen answered a failed load with an empty list and no explanation. A
+ * coupon page that silently shows zero coupons is indistinguishable from a
+ * merchant who has none.
+ */
+function asApiError(error: unknown): CouponApiError | null {
+  if (!error) return null
+  if (error instanceof CouponApiError) return error
+  // Status 0, borrowed from XHR: it means "the request never got an answer".
+  return new CouponApiError(
+    error instanceof Error && error.message
+      ? error.message
+      : "No pudimos contactar al servidor.",
+    0
+  )
+}
+
+/**
  * Signed fetch. The URL must be absolute, because that is what gets signed and
  * what the server compares against — a relative path would produce a token
  * bound to nothing.
@@ -261,7 +282,7 @@ export function useCoupons(): CouponsResult {
     discovery: query.data?.discovery ?? null,
     loading: query.isPending && !!pubkey && !!signer,
     refreshing: query.isFetching && !query.isPending,
-    error: query.error instanceof CouponApiError ? query.error : null,
+    error: asApiError(query.error),
     refresh: () => void query.refetch(),
     create: async (input) => (await createMutation.mutateAsync(input)).coupon,
     update: async (id, patch) => (await updateMutation.mutateAsync({ id, patch })).coupon,
@@ -323,7 +344,7 @@ export function useCouponMints(couponId: string | null): {
   return {
     mints: query.data?.mints ?? [],
     loading: query.isPending && !!couponId && !!pubkey && !!signer,
-    error: query.error instanceof CouponApiError ? query.error : null,
+    error: asApiError(query.error),
     voidMint: async (nonce) => {
       await voidMutation.mutateAsync(nonce)
     },

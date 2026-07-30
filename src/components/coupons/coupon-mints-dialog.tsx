@@ -1,6 +1,6 @@
 "use client"
 
-import { Ban, Check, Copy, Loader2, TicketX } from "lucide-react"
+import { Ban, Loader2, TicketX } from "lucide-react"
 import * as React from "react"
 
 import type { CouponJson, MintJson } from "@/components/coupons/use-coupons"
@@ -15,6 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { CopyButton } from "@/components/ui/copy-button"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -104,7 +105,7 @@ export function CouponMintsPanel({ coupon }: { coupon: CouponJson }) {
             <div className="min-w-0 space-y-1">
               <p className="flex items-center gap-1.5">
                 <span className="numeric truncate text-sm">{mint.nonce}</span>
-                <CopyButton value={mint.nonce} />
+                <CopyButton label="Copiar el código del cupón" value={mint.nonce} />
               </p>
               <p className="text-xs text-muted-foreground">
                 <MintTimeline mint={mint} />
@@ -216,33 +217,5 @@ function Tally({
       <span className="numeric font-semibold">{value}</span>
       {label}
     </span>
-  )
-}
-
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1500)
-    return () => window.clearTimeout(timer)
-  }, [copied])
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      aria-label="Copiar el código del cupón"
-      className="size-6 shrink-0 text-muted-foreground"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value).then(() => setCopied(true))
-      }}
-    >
-      {copied ? (
-        <Check className="size-3.5 text-success" aria-hidden />
-      ) : (
-        <Copy className="size-3.5" aria-hidden />
-      )}
-    </Button>
   )
 }

@@ -32,18 +32,31 @@ export const getStorefrontCoupons = cache(
   ): Promise<CouponDiscovery | null> => {
     const relays = dedupeRelays([...relayHints, ...DEFAULT_RELAYS])
 
-    const { events } = await queryRelays(
-      relays,
-      [
-        {
-          kinds: [KINDS.APP_DATA],
-          authors: [pubkey],
-          "#d": [COUPON_DISCOVERY_D],
-          limit: 1,
-        },
-      ],
-      { label: "Anuncio de cupones", timeoutMs: 4_000 }
-    )
+    /**
+     * A failed read means "no coupons", never a thrown render.
+     *
+     * Suspense catches suspension, not rejection: a DNS failure or a dead
+     * socket here would propagate to the nearest error boundary and cost the
+     * shopper the whole payment screen — over an optional coupon box. Every
+     * other failure mode in this function already degrades to null.
+     */
+    let events
+    try {
+      ;({ events } = await queryRelays(
+        relays,
+        [
+          {
+            kinds: [KINDS.APP_DATA],
+            authors: [pubkey],
+            "#d": [COUPON_DISCOVERY_D],
+            limit: 1,
+          },
+        ],
+        { label: "Anuncio de cupones", timeoutMs: 4_000 }
+      ))
+    } catch {
+      return null
+    }
 
     // Addressable: the newest wins, exactly as a relay would decide.
     const newest = events.sort((a, b) => b.created_at - a.created_at)[0]

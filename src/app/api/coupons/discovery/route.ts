@@ -57,6 +57,20 @@ export async function PUT(request: Request) {
   }
   const event = body.event as SignedEvent
 
+  // Shape first, and OUTSIDE the try below: the predicates that follow read
+  // `tags` and `content` directly, so `{"event":{}}` used to throw a TypeError
+  // that surfaced as a 500 instead of the 400 it is.
+  if (
+    typeof event.id !== "string" ||
+    typeof event.sig !== "string" ||
+    typeof event.pubkey !== "string" ||
+    typeof event.content !== "string" ||
+    typeof event.kind !== "number" ||
+    !Array.isArray(event.tags)
+  ) {
+    return fail("Cuerpo inválido.", 400, METHODS)
+  }
+
   // Everything below is checked because the caller controls it entirely, and a
   // bad row here would be re-broadcast to relays under the merchant's name.
   if (!isOurCouponDiscovery(event, auth.pubkey)) {

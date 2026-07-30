@@ -1,10 +1,10 @@
 "use client"
 
-import { Check, Copy, ShieldCheck } from "lucide-react"
+import { ShieldCheck } from "lucide-react"
 import * as React from "react"
 
 import type { CouponJson, MintedCoupon } from "@/components/coupons/use-coupons"
-import { Button } from "@/components/ui/button"
+import { CopyButton } from "@/components/ui/copy-button"
 import {
   ResponsiveDialog,
   ResponsiveDialogContent,
@@ -93,8 +93,8 @@ function Issued({ minted, npub }: { minted: MintedCoupon; npub: string }) {
       </div>
 
       <div className="flex flex-wrap justify-center gap-2">
-        <CopyButton value={minted.nonce} label="Copiar código" />
-        <CopyButton value={claimUrl} label="Copiar link" />
+        <CopyButton showLabel value={minted.nonce} label="Copiar código" />
+        <CopyButton showLabel value={claimUrl} label="Copiar link" />
       </div>
 
       <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
@@ -143,27 +143,5 @@ function NonceQr({ url }: { url: string }) {
         <Skeleton className="aspect-square w-full rounded-lg bg-neutral-200" />
       )}
     </div>
-  )
-}
-
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = React.useState(false)
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={() => {
-        void navigator.clipboard.writeText(value)
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1500)
-      }}
-    >
-      {copied ? (
-        <Check className="size-4" aria-hidden />
-      ) : (
-        <Copy className="size-4" aria-hidden />
-      )}
-      {copied ? "Copiado" : label}
-    </Button>
   )
 }

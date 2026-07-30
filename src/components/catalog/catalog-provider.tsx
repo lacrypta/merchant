@@ -207,7 +207,10 @@ async function readCatalog(
   const events = await queryEvents(
     [
       {
-        kinds: [KINDS.PRODUCT, KINDS.CATEGORY],
+        // 30403 is still read even though nothing writes drafts any more: the
+        // sweep below is the only thing that can find a leftover from before
+        // the feature was removed, and without this kind it never sees one.
+        kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
         authors: [pubkey],
       },
       { kinds: [KINDS.DELETION], authors: [pubkey] },

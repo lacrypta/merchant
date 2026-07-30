@@ -40,6 +40,30 @@ export function MintersSection({
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [confirming, setConfirming] = React.useState<MinterJson | null>(null)
+  const [removing, setRemoving] = React.useState<string | null>(null)
+  const [removeError, setRemoveError] = React.useState<string | null>(null)
+
+  /**
+   * Removal can fail — an expired NIP-98 signature, a refused bunker prompt, a
+   * dead database — and the row simply staying put is not an answer. Without
+   * this the merchant is left believing a cashier lost access when they did
+   * not, which is the one belief this screen must never produce.
+   */
+  async function handleRemove(minter: MinterJson) {
+    setRemoveError(null)
+    setRemoving(minter.pubkey)
+    try {
+      await onRemove(minter.pubkey)
+    } catch (err) {
+      setRemoveError(
+        err instanceof Error
+          ? err.message
+          : `No pudimos quitar a ${minter.label || minter.npub}.`
+      )
+    } finally {
+      setRemoving(null)
+    }
+  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -139,14 +163,25 @@ export function MintersSection({
                 variant="ghost"
                 size="sm"
                 aria-label={`Quitar ${m.label || m.npub}`}
+                disabled={removing === m.pubkey}
                 onClick={() => setConfirming(m)}
               >
-                <Trash2 className="size-4" aria-hidden />
+                {removing === m.pubkey ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Trash2 className="size-4" aria-hidden />
+                )}
               </Button>
             </li>
           ))}
         </ul>
       )}
+
+      {removeError ? (
+        <p role="alert" className="text-sm text-danger">
+          {removeError}
+        </p>
+      ) : null}
 
       <AlertDialog
         open={!!confirming}
@@ -166,7 +201,7 @@ export function MintersSection({
               onClick={() => {
                 const target = confirming
                 setConfirming(null)
-                if (target) void onRemove(target.pubkey)
+                if (target) void handleRemove(target)
               }}
             >
               Quitar

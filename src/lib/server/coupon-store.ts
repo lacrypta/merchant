@@ -610,7 +610,10 @@ export async function voidMint(
       return { ok: true, mint: voided }
     }
 
-    const existing = await getByNonce(db, nonce)
+    // `tx`, not `db`: a second checkout from a pool of five while this
+    // transaction still holds one deadlocks under concurrent voids, and reading
+    // outside the transaction could disagree with the UPDATE that just ran.
+    const existing = await getByNonce(tx, nonce)
     if (
       !existing ||
       existing.mint.definitionId !== definitionId ||

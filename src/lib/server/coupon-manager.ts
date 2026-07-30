@@ -59,13 +59,17 @@ export function getCouponManager(): CouponManager | null {
     const decoded = nip19.decode(raw)
     if (decoded.type !== "nsec") throw new Error(`expected an nsec, got ${decoded.type}`)
     secret = decoded.data
-  } catch (e) {
-    // Loud, because the operator set the variable and it does not work — that is
-    // a deployment mistake worth a line in the log every boot.
+  } catch {
+    /**
+     * Loud, because the operator set the variable and it does not work — that
+     * is a deployment mistake worth a line in the log every boot.
+     *
+     * The thrown message is deliberately NOT included: bech32 decode errors
+     * from @scure/base can quote the offending input, and the offending input
+     * here is a secret key. A mistyped nsec is still an nsec.
+     */
     console.error(
-      `[coupons] COUPON_MANAGER_NSEC is not a valid nsec: ${
-        e instanceof Error ? e.message : "unknown error"
-      }`
+      "[coupons] COUPON_MANAGER_NSEC no es un nsec válido (se espera una clave bech32 nsec1…). Los cupones van a responder 503."
     )
     cache.__couponManager = null
     return null

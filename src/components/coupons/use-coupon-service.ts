@@ -136,8 +136,15 @@ export function useCouponService(
     retry: false,
     queryFn: async (): Promise<ManagerInfo> => {
       const res = await fetch("/api/coupons/manager", { cache: "no-store" })
-      const data = (await res.json()) as ManagerInfo & { error?: string }
-      if (!res.ok) throw new Error(data.error ?? "No pudimos consultar el servidor.")
+      // Parsed defensively: a proxy in front of this app answers 502 with an
+      // HTML page, and `res.json()` on that throws a SyntaxError that says
+      // "Unexpected token '<'" — which is what the merchant would have read.
+      const data = (await res.json().catch(() => null)) as
+        | (ManagerInfo & { error?: string })
+        | null
+      if (!res.ok || !data) {
+        throw new Error(data?.error ?? "No pudimos consultar el servidor.")
+      }
       return data
     },
   })

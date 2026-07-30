@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  Copy,
   Database,
   Loader2,
   Radio,
@@ -24,6 +23,7 @@ import type {
   DiscoveryPresence,
 } from "@/components/coupons/use-coupon-service"
 import type { RelayCheck } from "@/components/coupons/use-relay-check"
+import { CopyButton } from "@/components/ui/copy-button"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -435,34 +435,6 @@ const RELAY_ROW: Record<
   },
   missing: { icon: X, label: "No lo tiene", className: "text-warning", spin: false },
   failed: { icon: X, label: "Falló", className: "text-danger", spin: false },
-}
-
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1500)
-    return () => window.clearTimeout(timer)
-  }, [copied])
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      aria-label={label}
-      className="size-6 shrink-0 text-muted-foreground"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value).then(() => setCopied(true))
-      }}
-    >
-      {copied ? (
-        <Check className="size-3.5 text-success" aria-hidden />
-      ) : (
-        <Copy className="size-3.5" aria-hidden />
-      )}
-    </Button>
-  )
 }
 
 function safeNpub(pubkey: string): string {
