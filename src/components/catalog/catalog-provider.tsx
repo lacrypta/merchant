@@ -756,7 +756,12 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         },
         `Borrar borrador ${ld.title}`,
         {
-          trackId: ld.d,
+          // Namespaced: in the dual-coordinate ghost case (comment above,
+          // ~line 246) `ld.d` can equal a LIVE product's `d`. A bare `ld.d`
+          // would land in the same `pending` set the board dims products by,
+          // so sweeping the ghost draft would transiently dim the unrelated
+          // live product.
+          trackId: `legacy-draft:${ld.d}`,
           advance: () =>
             advanceRead((prev) => ({
               ...prev,

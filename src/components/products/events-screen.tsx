@@ -190,10 +190,14 @@ export function EventsScreen() {
     setKindFilter("all")
   }
 
-  const copyJson = () => {
+  const copyJson = async () => {
     if (!selectedEvent) return
-    void navigator.clipboard.writeText(JSON.stringify(selectedEvent, null, 2))
-    toast.success("JSON copiado")
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(selectedEvent, null, 2))
+      toast.success("JSON copiado")
+    } catch {
+      toast.error("No se pudo copiar el JSON")
+    }
   }
 
   const action = (
