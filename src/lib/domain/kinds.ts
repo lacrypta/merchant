@@ -22,7 +22,11 @@ export const KINDS = {
   APP_DATA: 30078,
   /** NIP-99 classified listing — active */
   PRODUCT: 30402,
-  /** NIP-99 classified listing — draft / inactive */
+  /**
+   * NIP-99 draft listing — RETIRED as a product state. Only written as
+   * deletion tombstones now; drafts left over from before the feature was
+   * removed are swept (kind 5 + tombstone) from the /products banner.
+   */
   PRODUCT_DRAFT: 30403,
   /** GammaMarkets product collection — we use it as a category */
   CATEGORY: 30405,

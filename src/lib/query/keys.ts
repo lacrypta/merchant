@@ -20,6 +20,9 @@ export const qk = {
 
   /** Zap receipts paid to one merchant, projected into their order book. */
   orders: (pubkey: string) => ["orders", pubkey] as const,
+
+  /** Raw events this app published with the merchant's key — the /products/events inspector. */
+  events: (pubkey: string) => ["events", pubkey] as const,
 } as const
 
 /**
@@ -42,4 +45,6 @@ export const CACHE = {
   catalog: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
   /** Receipts are append-only; refresh them on each visit, retain history locally. */
   orders: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
+  /** The inspector mirrors whatever relays hold right now; refetch each visit. */
+  events: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
 } as const
