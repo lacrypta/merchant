@@ -112,7 +112,6 @@ export function wooToProduct(
   return {
     d,
     posId: existing?.posId ?? 0,
-    lifecycle: "published",
     status,
     title: woo.name?.trim() || "(sin título)",
     sku: normalizeSku(opts.sku),

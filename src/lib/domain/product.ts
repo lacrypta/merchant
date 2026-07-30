@@ -6,9 +6,7 @@ import { nextCreatedAt } from "@/lib/nostr/created-at"
 import { coordinate, tagValue, toInt } from "@/lib/nostr/tags"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
-/** Selects the KIND (30402 published | 30403 draft). */
-export type Lifecycle = "published" | "draft"
-/** The NIP-99 `status` TAG. Orthogonal to lifecycle — do not conflate. */
+/** The NIP-99 `status` TAG. */
 export type NipStatus = "active" | "sold"
 /** GammaMarkets `visibility`. */
 export type Visibility = "hidden" | "on-sale" | "pre-order"
@@ -28,7 +26,6 @@ export interface Product {
   d: string
   /** DERIVED from d, never stored on the event. */
   posId: number
-  lifecycle: Lifecycle
   status: NipStatus
   title: string
   summary?: string
@@ -151,7 +148,7 @@ function altForProduct(p: Pick<Product, "title" | "price">): string {
 }
 
 /**
- * Build the kind:30402 (or 30403) event for a product.
+ * Build the kind:30402 event for a product.
  *
  * Two invariants the builder must enforce:
  *  - `published_at` is the FIRST publish time and survives every edit.
@@ -165,9 +162,8 @@ export function buildProductEvent(
   categoryDByslug: Map<string, string>,
   previousCreatedAt?: number
 ): EventTemplate {
-  const kind = p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
   const created_at = nextCreatedAt(
-    coordinate(kind, p.pubkey, p.d),
+    coordinate(KINDS.PRODUCT, p.pubkey, p.d),
     previousCreatedAt
   )
   return {
@@ -194,8 +190,6 @@ export function productEventBody(
   categoryDByslug: Map<string, string>,
   publishedAt: number
 ): EventBody {
-  const kind = p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
-
   const tags: string[][] = [
     ["d", p.d],
     ["title", p.title],
@@ -255,11 +249,13 @@ export function productEventBody(
   tags.push(["client", "merchant-manager"])
   tags.push(...p.unknownTags)
 
-  return { kind, content: p.description, tags }
+  return { kind: KINDS.PRODUCT, content: p.description, tags }
 }
 
 export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
-  if (e.kind !== KINDS.PRODUCT && e.kind !== KINDS.PRODUCT_DRAFT) {
+  // 30403 is no longer a product: since the draft feature was removed it only
+  // holds tombstones and pre-removal drafts, which the catalog read sweeps.
+  if (e.kind !== KINDS.PRODUCT) {
     return { ok: false, reason: "wrong kind" }
   }
 
@@ -293,7 +289,6 @@ export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
     value: {
       d,
       posId: derivePosId(d),
-      lifecycle: e.kind === KINDS.PRODUCT ? "published" : "draft",
       status: tagValue(e, "status") === "sold" ? "sold" : "active",
       title: tagValue(e, "title") ?? "(sin título)",
       summary: tagValue(e, "summary"),
@@ -321,9 +316,5 @@ export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
 
 /** Is this product visible to a POS / public storefront? */
 export function isPubliclyVisible(p: Product): boolean {
-  return (
-    p.lifecycle === "published" &&
-    p.status === "active" &&
-    p.visibility !== "hidden"
-  )
+  return p.status === "active" && p.visibility !== "hidden"
 }

@@ -32,13 +32,10 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Category } from "@/lib/domain/category"
 import type { Product } from "@/lib/domain/product"
 import { fold } from "@/lib/domain/slug"
-
-type StatusFilter = "todos" | "activos" | "borradores"
 
 export function ProductsScreen() {
   const { state } = useAuth()
@@ -50,11 +47,13 @@ export function ProductsScreen() {
     saveCategory,
     deleteProduct,
     deleteCategory,
+    legacyDrafts,
+    sweepLegacyDrafts,
+    saving,
   } = useCatalog()
   const { connection: wooConnection } = useWoo()
 
   const [query, setQuery] = React.useState("")
-  const [filter, setFilter] = React.useState<StatusFilter>("todos")
   const [editingCategory, setEditingCategory] = React.useState<Category | null>(
     null
   )
@@ -78,12 +77,10 @@ export function ProductsScreen() {
   const visible = React.useMemo(() => {
     const q = fold(query)
     return products.filter((p) => {
-      if (filter === "activos" && p.lifecycle !== "published") return false
-      if (filter === "borradores" && p.lifecycle !== "draft") return false
       if (!q) return true
       return fold(p.title).includes(q) || fold(p.summary ?? "").includes(q)
     })
-  }, [products, filter, query])
+  }, [products, query])
 
   /**
    * `t` is authoritative for MEMBERSHIP; the category's `a` list only supplies
@@ -207,6 +204,26 @@ export function ProductsScreen() {
 
       <UnsavedBar />
 
+      {legacyDrafts.length > 0 ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-sm text-warning">
+          <p>
+            El estado Borrador se eliminó de la app.{" "}
+            {legacyDrafts.length === 1
+              ? "Queda 1 borrador viejo"
+              : `Quedan ${legacyDrafts.length} borradores viejos`}{" "}
+            en tus relays.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={sweepLegacyDrafts}
+          >
+            Eliminarlos de los relays
+          </Button>
+        </div>
+      ) : null}
+
       {nothingAtAll ? (
         <EmptyState
           title="Todavía no tenés nada publicado"
@@ -237,16 +254,6 @@ export function ProductsScreen() {
               placeholder="Buscar…"
               aria-label="Buscar productos"
               className="h-11 max-w-xs rounded-full"
-            />
-            <SegmentedControl
-              aria-label="Filtrar por estado"
-              value={filter}
-              onValueChange={(v) => setFilter(v as StatusFilter)}
-              options={[
-                { value: "todos", label: "Todos" },
-                { value: "activos", label: "Activos" },
-                { value: "borradores", label: "Borradores" },
-              ]}
             />
           </div>
 

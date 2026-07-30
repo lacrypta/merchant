@@ -10,7 +10,6 @@ function product(over: Partial<Product> = {}): Product {
   return {
     d: "fernet",
     posId: 1,
-    lifecycle: "published",
     status: "active",
     title: "Fernet con Coca",
     summary: undefined,
@@ -99,7 +98,6 @@ describe("diffCatalog", () => {
       { stock: 5 },
       { visibility: "hidden" },
       { status: "sold" },
-      { lifecycle: "draft" },
       { summary: "Vaso de 500ml" },
       { description: "markdown" },
       { categories: ["bebidas"] },

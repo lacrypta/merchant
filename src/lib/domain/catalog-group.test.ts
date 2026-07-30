@@ -10,7 +10,6 @@ function product(over: Partial<Product> = {}): Product {
   return {
     d: "pancho",
     posId: 1,
-    lifecycle: "published",
     status: "active",
     title: "Pancho",
     summary: undefined,

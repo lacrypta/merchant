@@ -44,7 +44,7 @@ import {
   writeRelayEntries,
 } from "@/lib/nostr/relay-prefs"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
-import { coordinate, coordinateOf } from "@/lib/nostr/tags"
+import { coordinate, coordinateOf, tagValue } from "@/lib/nostr/tags"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
 /**
@@ -91,6 +91,13 @@ interface CatalogContextValue {
   discardChanges: () => void
   setRelayEntries: (entries: RelayEntry[]) => void
   publishRelayList: () => void
+  /**
+   * Live kind-30403 drafts left on relays from before the draft feature was
+   * removed. Surfaced as a one-time migration banner on /products.
+   */
+  legacyDrafts: LegacyDraft[]
+  /** Publish a kind 5 + tombstone for every legacy draft. */
+  sweepLegacyDrafts: () => void
   /** Raw NIP-78 events for our own `d` tags. Still encrypted. */
   appData: SignedEvent[]
   /**
@@ -107,6 +114,13 @@ const CatalogContext = React.createContext<CatalogContextValue | null>(null)
 const EMPTY_SNAPSHOT: CatalogSnapshot = { products: [], categories: [] }
 /** Stable reference: a fresh [] each render would re-run every consumer memo. */
 const EMPTY_APP_DATA: SignedEvent[] = []
+const EMPTY_LEGACY_DRAFTS: LegacyDraft[] = []
+
+/** The bare minimum needed to address and label a stale 30403 for deletion. */
+export interface LegacyDraft {
+  d: string
+  title: string
+}
 
 /**
  * The merchant's saved relay record, or null if they have never touched it.
@@ -164,6 +178,8 @@ const byOrderThenName = (a: Category, b: Category) =>
 
 interface CatalogRead {
   snapshot: CatalogSnapshot
+  /** Stale 30403 drafts still live on relays, pending the migration sweep. */
+  legacyDrafts: LegacyDraft[]
   /** The merchant's published NIP-65 list, if they have one. */
   relayList: RelayEntry[] | null
   /**
@@ -219,10 +235,21 @@ async function readCatalog(
 
   const products: Product[] = []
   const categories: Category[] = []
+  const legacyDrafts: LegacyDraft[] = []
   for (const e of addressable) {
-    if (e.kind === KINDS.PRODUCT || e.kind === KINDS.PRODUCT_DRAFT) {
+    if (e.kind === KINDS.PRODUCT) {
       const r = parseProductEvent(e)
       if (r.ok) products.push(r.value)
+    } else if (e.kind === KINDS.PRODUCT_DRAFT) {
+      // The draft feature is gone. Whatever still lives at 30403 — except our
+      // own tombstones — is a leftover to sweep, even when the same `d` also
+      // exists at 30402 (the old dual-coordinate ghost).
+      if (!e.tags.some((t) => t[0] === "deleted")) {
+        legacyDrafts.push({
+          d: tagValue(e, "d") ?? "",
+          title: tagValue(e, "title") ?? "(sin título)",
+        })
+      }
     } else if (e.kind === KINDS.CATEGORY) {
       const r = parseCategoryEvent(e, pubkey)
       if (r.ok) categories.push(r.value)
@@ -236,6 +263,7 @@ async function readCatalog(
 
   return {
     snapshot: { products, categories },
+    legacyDrafts: legacyDrafts.filter((ld) => ld.d),
     relayList: relayEvent ? parseRelayListEvent(relayEvent) : null,
     appData: latestByAddress(live.filter((e) => e.kind === KINDS.APP_DATA)),
   }
@@ -325,6 +353,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     () => catalogQuery.data?.appData ?? EMPTY_APP_DATA,
     [catalogQuery.data]
   )
+  // `?? EMPTY` also covers caches persisted before the field existed.
+  const legacyDrafts = catalogQuery.data?.legacyDrafts ?? EMPTY_LEGACY_DRAFTS
 
   const publishedRef = React.useRef(published)
   React.useEffect(() => {
@@ -344,16 +374,26 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
    * event actually landed, which is what leaves a FAILED item still badged as
    * unsaved instead of optimistically pretending it went out.
    */
-  const advancePublished = React.useCallback(
-    (mutate: (prev: CatalogSnapshot) => CatalogSnapshot) => {
+  const advanceRead = React.useCallback(
+    (mutate: (prev: CatalogRead) => CatalogRead) => {
       if (!pubkey) return
-      queryClient.setQueryData<CatalogRead>(qk.catalog(pubkey), (old) => ({
-        relayList: old?.relayList ?? null,
-        appData: old?.appData ?? EMPTY_APP_DATA,
-        snapshot: mutate(old?.snapshot ?? EMPTY_SNAPSHOT),
-      }))
+      queryClient.setQueryData<CatalogRead>(qk.catalog(pubkey), (old) =>
+        mutate({
+          relayList: old?.relayList ?? null,
+          appData: old?.appData ?? EMPTY_APP_DATA,
+          legacyDrafts: old?.legacyDrafts ?? EMPTY_LEGACY_DRAFTS,
+          snapshot: old?.snapshot ?? EMPTY_SNAPSHOT,
+        })
+      )
     },
     [queryClient, pubkey]
+  )
+
+  const advancePublished = React.useCallback(
+    (mutate: (prev: CatalogSnapshot) => CatalogSnapshot) => {
+      advanceRead((prev) => ({ ...prev, snapshot: mutate(prev.snapshot) }))
+    },
+    [advanceRead]
   )
 
   /**
@@ -595,36 +635,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           }))
         },
       })
-
-      /**
-       * Draft ↔ published is a KIND change, so it leaves the old coordinate
-       * alive.
-       *
-       * 30402 and 30403 are different addresses. Publishing a draft writes
-       * the 30402 but does nothing to the 30403 that is still sitting on
-       * every relay — the product exists twice forever, and any client that
-       * reads drafts sees a ghost of an older version. Observed: a product
-       * saved as a draft and then published had both coordinates live.
-       *
-       * The kind 5 goes out AFTER the new version above, so the worst case is
-       * a momentary double listing rather than a gap with nothing at all.
-       */
-      if (previous && previous.lifecycle !== p.lifecycle) {
-        const staleKind =
-          previous.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
-        publish(
-          {
-            kind: KINDS.DELETION,
-            created_at: nowSeconds(),
-            content: "Versión anterior del producto",
-            tags: [
-              ["a", coordinate(staleKind, pubkey, d)],
-              ["k", String(staleKind)],
-            ],
-          },
-          `Limpiar ${previous.lifecycle === "published" ? "publicado" : "borrador"} de ${p.title}`
-        )
-      }
     }
 
     for (const [d, kind] of diff.categories) {
@@ -647,8 +657,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     for (const [d, kind] of diff.products) {
       if (kind !== "deleted") continue
       const p = before.products.find((x) => x.d === d)!
-      const eventKind =
-        p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
+      const eventKind = KINDS.PRODUCT
       const t = nowSeconds()
 
       // ORDER MATTERS. NIP-09 deletes every version up to AND INCLUDING the
@@ -724,6 +733,56 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
 
   }, [pubkey, signer, publish, advancePublished])
 
+  /**
+   * One-time migration: the draft feature is gone, so whatever still lives at
+   * 30403 gets the same treatment as a product deletion — kind 5 first, then
+   * a tombstone strictly after the cutoff, for clients that ignore kind 5.
+   * Runs from the /products banner; each swept draft leaves the read cache on
+   * settle, so the banner counts down and disappears for good.
+   */
+  const sweepLegacyDrafts = React.useCallback(() => {
+    if (!pubkey || !signer) return
+    for (const ld of legacyDrafts) {
+      const t = nowSeconds()
+      publish(
+        {
+          kind: KINDS.DELETION,
+          created_at: t,
+          content: "Borrador eliminado",
+          tags: [
+            ["a", coordinate(KINDS.PRODUCT_DRAFT, pubkey, ld.d)],
+            ["k", String(KINDS.PRODUCT_DRAFT)],
+          ],
+        },
+        `Borrar borrador ${ld.title}`,
+        {
+          trackId: ld.d,
+          advance: () =>
+            advanceRead((prev) => ({
+              ...prev,
+              legacyDrafts: prev.legacyDrafts.filter((x) => x.d !== ld.d),
+            })),
+        }
+      )
+      publish(
+        {
+          kind: KINDS.PRODUCT_DRAFT,
+          created_at: t + 1,
+          content: "",
+          tags: [
+            ["d", ld.d],
+            ["title", ld.title],
+            ["deleted", ""],
+            ["visibility", "hidden"],
+            ["status", "sold"],
+            ["alt", "Producto eliminado"],
+          ],
+        },
+        `Lápida de ${ld.title}`
+      )
+    }
+  }, [pubkey, signer, legacyDrafts, publish, advanceRead])
+
   const publishAppData = React.useCallback(
     (d: string, ciphertext: string, label: string) => {
       if (!pubkey) return
@@ -765,6 +824,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      legacyDrafts,
+      sweepLegacyDrafts,
       appData,
       publishAppData,
     }),
@@ -786,6 +847,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      legacyDrafts,
+      sweepLegacyDrafts,
       appData,
       publishAppData,
     ]

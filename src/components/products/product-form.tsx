@@ -29,7 +29,6 @@ function emptyProduct(pubkey: string): Product {
   return {
     d: crypto.randomUUID(),
     posId: 0,
-    lifecycle: "published",
     status: "active",
     title: "",
     summary: undefined,
@@ -151,7 +150,6 @@ export function ProductForm({
     const v = parsed.data
     const product: Product = {
       ...base,
-      lifecycle: "published",
       status: v.status,
       title: v.title,
       sku: cleanSku,

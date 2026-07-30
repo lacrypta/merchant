@@ -606,11 +606,6 @@ function ProductRow({
             {product.title}
           </button>
           <ChangeBadge kind={changes.products.get(product.d)} />
-          {product.lifecycle === "draft" ? (
-            <Badge className="border-warning/30 bg-warning-bg text-warning">
-              Borrador
-            </Badge>
-          ) : null}
           {product.visibility === "hidden" ? (
             <Badge variant="secondary">Oculto</Badge>
           ) : null}
