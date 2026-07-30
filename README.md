@@ -26,15 +26,29 @@ npm install
 npm run dev
 ```
 
+### Variables de entorno
+
+Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en `.env.local`.
+
+| Variable | Para qué |
+|---|---|
+| `DATABASE_URL` | Postgres, **sólo** para cupones. Sin esto, `/api/coupons/*` responde 503 y el resto de la app anda igual. |
+| `COUPON_MANAGER_NSEC` | La identidad nostr de este servicio: firma los cupones que emite. Sin esto no se puede emitir ni canjear. |
+| `NEXT_PUBLIC_APP_URL` | El origen público. En producción **conviene setearlo**: es lo único que hace que la validación NIP-98 ignore los headers `x-forwarded-*`, que cualquiera puede falsificar. |
+| `LN_PROXY_SECRET` | Firma los tokens del proxy LNURL. Sin esto se usa una clave por proceso y los pagos en vuelo se cortan en cada deploy. |
+
 ## Cómo se modela en nostr
 
 | Kind | Uso |
 |---|---|
 | `30402` | Producto publicado ([NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md)) |
-| `30403` | Borrador, y lápida al borrar |
+| `30403` | Lápida al borrar un producto. **No hay borradores**: todo lo que se publica es un 30402 vivo. |
 | `30405` | Categoría ([GammaMarkets](https://github.com/GammaMarkets/market-spec/blob/main/spec.md), la extensión de e-commerce que el propio NIP-99 enlaza) |
 | `5` | Borrado (NIP-09) |
 | `0` · `10002` · `10063` | Perfil · relays NIP-65 · servidores Blossom |
+| `30078` | Datos de la app (NIP-78): config de WooCommerce (cifrada) y endpoints de cupones (en claro) |
+| `27235` | Autenticación HTTP (NIP-98) hacia la API de cupones |
+| `20402` | Cupón firmado por este servicio. Nunca se publica: viaja en la respuesta HTTP. |
 
 Decisiones que no son obvias y conviene no revertir sin leer el porqué:
 
@@ -44,6 +58,35 @@ Decisiones que no son obvias y conviene no revertir sin leer el porqué:
 - **Al borrar va primero el kind 5 y después la lápida**, en `t+1`. NIP-09 borra todo hasta *e incluyendo* el `created_at` del kind 5, así que el orden intuitivo se come la lápida.
 - **Las escrituras van a una cola en background.** Una vuelta NIP-46 tarda 3–15s; bloquear la UI haría que cargar cinco productos sea mirar una pantalla cinco minutos. Se firma de a uno: varios firmantes remotos descartan un `signEvent` concurrente.
 - **`purplepag.es` entra sólo como lectura.** Rechaza los productos con `blocked: kind 30402 is not allowed`, y dejarlo en escritura haría que toda publicación se vea parcial.
+
+## Cupones
+
+Cuatro tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), y **comprá A, llevate B gratis**. Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra.
+
+El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
+
+Es la única parte de la app con base de datos, y el motivo es corto: *"¿este cupón ya se usó?"* tiene que tener una sola respuesta en el instante en que dos cajas la preguntan, y los relays son consistentes-eventualmente por diseño.
+
+📄 **[Documentación completa: `docs/cupones.md`](docs/cupones.md)** — los cuatro tipos y su aritmética, los dos eventos de nostr (anuncio y voucher), todos los endpoints con sus formas, NIP-98, y los flujos de punta a punta.
+
+```bash
+docker run -d --name merchant-pg -p 55432:5432 \
+  -e POSTGRES_USER=merchant -e POSTGRES_PASSWORD=merchant -e POSTGRES_DB=merchant \
+  postgres:17-alpine
+```
+
+```bash
+DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
+COUPON_MANAGER_NSEC=nsec1…       # la identidad que firma los vouchers
+NEXT_PUBLIC_APP_URL=http://localhost:4321
+```
+
+```bash
+npm run db:generate   # después de tocar el schema
+npm run db:migrate    # en cada deploy
+```
+
+Sin esas variables la app arranca igual y los endpoints de cupones responden `503`: no tener base es un estado soportado.
 
 ## Interoperabilidad con el POS
 

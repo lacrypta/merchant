@@ -26,7 +26,15 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
+import {
+  Eye,
+  EyeOff,
+  GripVertical,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Trash2,
+} from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
 import { ChangeBadge } from "@/components/catalog/change-badge"
@@ -39,9 +47,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { formatPrice } from "@/lib/domain/price"
+import { formatAmount, formatPrice } from "@/lib/domain/price"
 import type { Category } from "@/lib/domain/category"
-import type { Product } from "@/lib/domain/product"
+import type { Product, Visibility } from "@/lib/domain/product"
 import { cn } from "@/lib/utils"
 
 export interface Group {
@@ -88,6 +96,8 @@ export function CatalogBoard({
   onEditProduct,
   onCreateProduct,
   onMoveProduct,
+  onToggleProductVisibility,
+  onEditProductPrice,
   onReorderCategories,
   onReorderProducts,
 }: {
@@ -99,6 +109,8 @@ export function CatalogBoard({
   onDeleteCategory: (c: Category) => void
   onDeleteProduct: (p: Product) => void
   onMoveProduct: (p: Product, toSlug: string | null) => void
+  onToggleProductVisibility: (p: Product, next: Visibility) => void
+  onEditProductPrice: (next: Product) => void
   onReorderCategories: (orderedDs: string[]) => void
   onReorderProducts: (category: Category, orderedDs: string[]) => void
 }) {
@@ -298,6 +310,8 @@ export function CatalogBoard({
                 onEditProduct={onEditProduct}
                 onCreateProduct={onCreateProduct}
                 onMoveProduct={onMoveProduct}
+                onToggleProductVisibility={onToggleProductVisibility}
+                onEditProductPrice={onEditProductPrice}
               />
             )
           })}
@@ -361,6 +375,8 @@ function CategorySection({
   onEditProduct,
   onCreateProduct,
   onMoveProduct,
+  onToggleProductVisibility,
+  onEditProductPrice,
 }: {
   group: Group
   containerKey: string
@@ -374,6 +390,8 @@ function CategorySection({
   onEditProduct: (p: Product) => void
   onCreateProduct: (slug: string | null) => void
   onMoveProduct: (p: Product, toSlug: string | null) => void
+  onToggleProductVisibility: (p: Product, next: Visibility) => void
+  onEditProductPrice: (next: Product) => void
 }) {
   const category = group.category
   const { changes } = useCatalog()
@@ -526,6 +544,10 @@ function CategorySection({
                   onDelete={() => onDeleteProduct(product)}
                   onEdit={() => onEditProduct(product)}
                   onMove={(slug) => onMoveProduct(product, slug)}
+                  onToggleVisibility={(next) =>
+                    onToggleProductVisibility(product, next)
+                  }
+                  onEditPrice={onEditProductPrice}
                 />
               )
             })
@@ -543,6 +565,8 @@ function ProductRow({
   onDelete,
   onEdit,
   onMove,
+  onToggleVisibility,
+  onEditPrice,
 }: {
   product: Product
   categories: Category[]
@@ -550,11 +574,16 @@ function ProductRow({
   onDelete: () => void
   onEdit: () => void
   onMove: (slug: string | null) => void
+  onToggleVisibility: (next: Visibility) => void
+  onEditPrice: (next: Product) => void
 }) {
   const { pending, changes } = useCatalog()
   const busy = pending.has(product.d)
   const s = useSortable({ id: product.d, disabled: busy })
   const thumb = product.images[0]
+  const hidden = product.visibility === "hidden"
+  /** What it was before being hidden, so unhiding restores "pre-venta". */
+  const wasVisible = React.useRef<Visibility | null>(null)
 
   return (
     <li
@@ -568,7 +597,11 @@ function ProductRow({
         // The DragOverlay renders the travelling copy; leaving the original
         // visible would show the row twice.
         s.isDragging && "opacity-0",
-        busy && "opacity-60"
+        busy && "opacity-60",
+        // A hidden product is still in the catalog and still editable — it is
+        // just not in the shop. Dimming reads as "inactive" at a glance
+        // without pushing it out of reach.
+        hidden && "opacity-55"
       )}
     >
       <button
@@ -582,7 +615,12 @@ function ProductRow({
         <GripVertical className="size-4" aria-hidden />
       </button>
 
-      <div className="size-12 shrink-0 overflow-hidden rounded-lg bg-surface-3">
+      <div
+        className={cn(
+          "size-12 shrink-0 overflow-hidden rounded-lg bg-surface-3",
+          hidden && "grayscale"
+        )}
+      >
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={thumb.url} alt="" className="size-full object-cover" />
@@ -603,14 +641,11 @@ function ProductRow({
             disabled={busy}
             className="truncate rounded-sm text-left font-semibold hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none"
           >
-            {product.title}
+            <span className={cn(hidden && "line-through decoration-1")}>
+              {product.title}
+            </span>
           </button>
           <ChangeBadge kind={changes.products.get(product.d)} />
-          {product.lifecycle === "draft" ? (
-            <Badge className="border-warning/30 bg-warning-bg text-warning">
-              Borrador
-            </Badge>
-          ) : null}
           {product.visibility === "hidden" ? (
             <Badge variant="secondary">Oculto</Badge>
           ) : null}
@@ -627,11 +662,46 @@ function ProductRow({
         ) : null}
       </div>
 
-      <p className="numeric shrink-0 font-semibold text-primary">
-        {product.price
-          ? formatPrice(product.price.amount, product.price.currency)
-          : "—"}
-      </p>
+      <PriceCell
+        product={product}
+        dimmed={hidden}
+        disabled={busy}
+        onCommit={(amount) =>
+          onEditPrice({
+            ...product,
+            price: { amount, currency: product.price?.currency ?? "ARS" },
+          })
+        }
+      />
+
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="tap-44 shrink-0"
+        disabled={busy}
+        aria-pressed={hidden}
+        aria-label={
+          hidden ? `Mostrar ${product.title}` : `Ocultar ${product.title}`
+        }
+        title={hidden ? "Mostrar en la tienda" : "Ocultar de la tienda"}
+        onClick={() => {
+          if (hidden) {
+            // Put back whatever it was before it was hidden, when we saw it
+            // happen — otherwise the spec default. Without this, hiding and
+            // unhiding a pre-venta product would silently demote it.
+            onToggleVisibility(wasVisible.current ?? "on-sale")
+          } else {
+            wasVisible.current = product.visibility
+            onToggleVisibility("hidden")
+          }
+        }}
+      >
+        {hidden ? (
+          <EyeOff className="size-4 text-warning" aria-hidden />
+        ) : (
+          <Eye className="size-4" aria-hidden />
+        )}
+      </Button>
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -684,5 +754,114 @@ export function AddCategoryButton({ onClick }: { onClick: () => void }) {
       <Plus className="size-4" aria-hidden />
       Nueva categoría
     </Button>
+  )
+}
+
+/**
+ * The price, editable where it is shown.
+ *
+ * Changing a price is the single most common edit a merchant makes — a supplier
+ * moves, the peso moves — and routing it through the full product dialog for a
+ * three-digit change was the slowest fast thing in the app.
+ *
+ * The currency is deliberately NOT editable here: it changes what the number
+ * means, and switching it by accident while retyping an amount would mis-price
+ * the product silently. That stays in the form.
+ */
+function PriceCell({
+  product,
+  dimmed,
+  disabled,
+  onCommit,
+}: {
+  product: Product
+  dimmed: boolean
+  disabled: boolean
+  onCommit: (amount: number) => void
+}) {
+  const [editing, setEditing] = React.useState(false)
+  const [value, setValue] = React.useState("")
+  const currency = product.price?.currency ?? "ARS"
+
+  function open() {
+    setValue(product.price ? formatAmount(product.price) : "")
+    setEditing(true)
+  }
+
+  function commit() {
+    setEditing(false)
+    // Commas are how half the world types decimals, and the numeric keypad on
+    // an es-AR phone offers one.
+    const amount = Number(value.replace(",", "."))
+    if (!Number.isFinite(amount) || amount <= 0) return
+    // Sub-sat prices cannot be charged; rounding silently would mis-price it.
+    if (currency === "SAT" && !Number.isInteger(amount)) return
+    if (product.price && amount === product.price.amount) return
+    onCommit(amount)
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={open}
+        title="Cambiar el precio"
+        aria-label={`Cambiar el precio de ${product.title}`}
+        className={cn(
+          "numeric shrink-0 rounded-md px-1 font-semibold transition-colors",
+          "hover:bg-surface-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+          "disabled:pointer-events-none",
+          dimmed ? "text-muted-foreground line-through decoration-1" : "text-primary"
+        )}
+      >
+        {product.price
+          ? formatPrice(product.price.amount, product.price.currency)
+          : "—"}
+      </button>
+    )
+  }
+
+  /**
+   * Editing looks like reading, plus a box.
+   *
+   * Same size, weight and colour as the price it replaces — including the
+   * currency, which the display renders as part of the same string. A smaller,
+   * white number in a grey-labelled box was a different piece of text
+   * appearing where the price used to be, and the row jumped when it did.
+   */
+  const tone = dimmed ? "text-muted-foreground" : "text-primary"
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <span className={cn("numeric font-semibold", tone)}>{currency}</span>
+      <input
+        autoFocus
+        type="text"
+        inputMode="decimal"
+        value={value}
+        aria-label={`Precio de ${product.title} en ${currency}`}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault()
+            commit()
+          }
+          if (e.key === "Escape") {
+            e.preventDefault()
+            setEditing(false)
+          }
+          // The row is a drag handle and a dnd-kit sortable; without this,
+          // arrows and space reach the sortable instead of the caret.
+          e.stopPropagation()
+        }}
+        className={cn(
+          "numeric h-8 w-24 rounded-md border border-border-strong bg-transparent px-2 text-right font-semibold",
+          "focus-visible:border-primary focus-visible:outline-none",
+          tone
+        )}
+      />
+    </span>
   )
 }

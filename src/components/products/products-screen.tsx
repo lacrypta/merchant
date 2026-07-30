@@ -35,10 +35,10 @@ import { Input } from "@/components/ui/input"
 import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Category } from "@/lib/domain/category"
-import type { Product } from "@/lib/domain/product"
+import { isPubliclyVisible, type Product, type Visibility } from "@/lib/domain/product"
 import { fold } from "@/lib/domain/slug"
 
-type StatusFilter = "todos" | "activos" | "borradores"
+type StatusFilter = "todos" | "activos" | "ocultos"
 
 export function ProductsScreen() {
   const { state } = useAuth()
@@ -78,8 +78,10 @@ export function ProductsScreen() {
   const visible = React.useMemo(() => {
     const q = fold(query)
     return products.filter((p) => {
-      if (filter === "activos" && p.lifecycle !== "published") return false
-      if (filter === "borradores" && p.lifecycle !== "draft") return false
+      // "Activos" is what a customer can actually see in the shop, which is
+      // the same test the storefront applies — not a separate idea of active.
+      if (filter === "activos" && !isPubliclyVisible(p)) return false
+      if (filter === "ocultos" && isPubliclyVisible(p)) return false
       if (!q) return true
       return fold(p.title).includes(q) || fold(p.summary ?? "").includes(q)
     })
@@ -169,6 +171,17 @@ export function ProductsScreen() {
     })
   }
 
+  /**
+   * Hide a product from the storefront, or put it back.
+   *
+   * Not a delete: the product keeps its `d`, its place in the category and its
+   * history — it simply stops being publicly visible (`isPubliclyVisible`).
+   * That is what a merchant wants for something out of season.
+   */
+  function handleToggleVisibility(p: Product, next: Visibility) {
+    saveProduct({ ...p, visibility: next })
+  }
+
   function handleReorderCategories(orderedDs: string[]) {
     // `order` is our own tag; rewrite it to match the new positions.
     for (const [index, d] of orderedDs.entries()) {
@@ -245,7 +258,7 @@ export function ProductsScreen() {
               options={[
                 { value: "todos", label: "Todos" },
                 { value: "activos", label: "Activos" },
-                { value: "borradores", label: "Borradores" },
+                { value: "ocultos", label: "Ocultos" },
               ]}
             />
           </div>
@@ -274,6 +287,8 @@ export function ProductsScreen() {
               onDeleteCategory={setCategoryToDelete}
               onDeleteProduct={setProductToDelete}
               onMoveProduct={handleMoveProduct}
+              onToggleProductVisibility={handleToggleVisibility}
+              onEditProductPrice={saveProduct}
               onReorderCategories={handleReorderCategories}
               onReorderProducts={handleReorderProducts}
             />

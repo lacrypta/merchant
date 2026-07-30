@@ -38,11 +38,16 @@ export function ProductImageUpload({
   onChange,
   onBusyChange,
   validationError,
+  title = "Imagen del producto",
+  alt = "Vista previa del producto",
 }: {
   value: ProductImage | null
   onChange: (image: ProductImage | null) => void
   onBusyChange: (busy: boolean) => void
   validationError?: string
+  /** Heading once an image is set. Coupons reuse this uploader verbatim. */
+  title?: string
+  alt?: string
 }) {
   const { signer } = useAuth()
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -200,7 +205,7 @@ export function ProductImageUpload({
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={previewUrl}
-              alt="Vista previa del producto"
+              alt={alt}
               className="size-full object-cover"
             />
           ) : (
@@ -222,7 +227,7 @@ export function ProductImageUpload({
         <div className="flex min-w-0 flex-col justify-center gap-3 p-4">
           <div className="space-y-1">
             <p className="text-sm font-semibold">
-              {previewUrl ? "Imagen del producto" : "Subí una imagen"}
+              {previewUrl ? title : "Subí una imagen"}
             </p>
             <p className="text-xs leading-relaxed text-muted-foreground">
               JPG, PNG, WebP, GIF o AVIF · máximo 10 MB

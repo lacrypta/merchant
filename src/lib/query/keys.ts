@@ -18,8 +18,19 @@ export const qk = {
   /** The merchant's own catalog, as published on relays. */
   catalog: (pubkey: string) => ["catalog", pubkey] as const,
 
+  /** The issued instances of ONE coupon, loaded when the merchant opens it. */
+  couponMints: (couponId: string) => ["coupon-mints", couponId] as const,
+
   /** Zap receipts paid to one merchant, projected into their order book. */
   orders: (pubkey: string) => ["orders", pubkey] as const,
+
+  /**
+   * The merchant's coupons and authorized minters, from OUR Postgres.
+   *
+   * The only key here that is not backed by nostr, which is why it is the only
+   * one that must never be served from the persisted cache — see CACHE.coupons.
+   */
+  coupons: (pubkey: string) => ["coupons", pubkey] as const,
 } as const
 
 /**
@@ -42,4 +53,14 @@ export const CACHE = {
   catalog: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
   /** Receipts are append-only; refresh them on each visit, retain history locally. */
   orders: { staleTime: 30_000, gcTime: 7 * 24 * 60 * 60_000 },
+  /**
+   * Coupons get a SHORT gcTime, unlike everything else here.
+   *
+   * The rest of this cache is local-first because relays are the source of
+   * truth and a week-old catalog is still the merchant's catalog. Coupons live
+   * in our database, and "12 claimed" from last Tuesday is not stale data — it
+   * is a wrong number about money. Ten minutes keeps a tab switch instant
+   * without ever surviving a session.
+   */
+  coupons: { staleTime: 15_000, gcTime: 10 * 60_000 },
 } as const

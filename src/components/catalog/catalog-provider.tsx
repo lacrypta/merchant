@@ -191,7 +191,7 @@ async function readCatalog(
   const events = await queryEvents(
     [
       {
-        kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
+        kinds: [KINDS.PRODUCT, KINDS.CATEGORY],
         authors: [pubkey],
       },
       { kinds: [KINDS.DELETION], authors: [pubkey] },
@@ -220,7 +220,7 @@ async function readCatalog(
   const products: Product[] = []
   const categories: Category[] = []
   for (const e of addressable) {
-    if (e.kind === KINDS.PRODUCT || e.kind === KINDS.PRODUCT_DRAFT) {
+    if (e.kind === KINDS.PRODUCT) {
       const r = parseProductEvent(e)
       if (r.ok) products.push(r.value)
     } else if (e.kind === KINDS.CATEGORY) {
@@ -596,35 +596,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         },
       })
 
-      /**
-       * Draft ↔ published is a KIND change, so it leaves the old coordinate
-       * alive.
-       *
-       * 30402 and 30403 are different addresses. Publishing a draft writes
-       * the 30402 but does nothing to the 30403 that is still sitting on
-       * every relay — the product exists twice forever, and any client that
-       * reads drafts sees a ghost of an older version. Observed: a product
-       * saved as a draft and then published had both coordinates live.
-       *
-       * The kind 5 goes out AFTER the new version above, so the worst case is
-       * a momentary double listing rather than a gap with nothing at all.
-       */
-      if (previous && previous.lifecycle !== p.lifecycle) {
-        const staleKind =
-          previous.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
-        publish(
-          {
-            kind: KINDS.DELETION,
-            created_at: nowSeconds(),
-            content: "Versión anterior del producto",
-            tags: [
-              ["a", coordinate(staleKind, pubkey, d)],
-              ["k", String(staleKind)],
-            ],
-          },
-          `Limpiar ${previous.lifecycle === "published" ? "publicado" : "borrador"} de ${p.title}`
-        )
-      }
     }
 
     for (const [d, kind] of diff.categories) {
@@ -647,8 +618,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     for (const [d, kind] of diff.products) {
       if (kind !== "deleted") continue
       const p = before.products.find((x) => x.d === d)!
-      const eventKind =
-        p.lifecycle === "published" ? KINDS.PRODUCT : KINDS.PRODUCT_DRAFT
       const t = nowSeconds()
 
       // ORDER MATTERS. NIP-09 deletes every version up to AND INCLUDING the
@@ -661,8 +630,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           created_at: t,
           content: "Producto eliminado",
           tags: [
-            ["a", coordinate(eventKind, pubkey, p.d)],
-            ["k", String(eventKind)],
+            ["a", coordinate(KINDS.PRODUCT, pubkey, p.d)],
+            ["k", String(KINDS.PRODUCT)],
           ],
         },
         `Borrar ${p.title}`,
@@ -681,7 +650,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       // live one.
       publish(
         {
-          kind: KINDS.PRODUCT_DRAFT,
+          kind: KINDS.PRODUCT_TOMBSTONE,
           created_at: t + 1,
           content: "",
           tags: [

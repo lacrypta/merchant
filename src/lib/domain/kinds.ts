@@ -14,6 +14,16 @@ export const KINDS = {
   BLOSSOM_SERVERS: 10063,
   /** BUD-11 blossom authorization */
   BLOSSOM_AUTH: 24242,
+  /** NIP-98 HTTP auth — signed per request, sent in an Authorization header */
+  HTTP_AUTH: 27235,
+  /**
+   * A coupon, signed by this server's manager key and returned in the mint and
+   * claim responses so a POS can verify it offline.
+   *
+   * Ephemeral range on purpose: the content carries a bearer nonce, so if one
+   * ever leaks to a relay we want it fanned out and forgotten, not stored.
+   */
+  COUPON_VOUCHER: 20402,
   /**
    * NIP-78 arbitrary app data. Addressable, and shared by every app that
    * uses it — the `d` tag is the only thing keeping us out of each other's
@@ -22,8 +32,16 @@ export const KINDS = {
   APP_DATA: 30078,
   /** NIP-99 classified listing — active */
   PRODUCT: 30402,
-  /** NIP-99 classified listing — draft / inactive */
-  PRODUCT_DRAFT: 30403,
+  /**
+   * NIP-99 draft listing — written ONLY as the tombstone left behind when a
+   * product is deleted.
+   *
+   * This app has no draft products: everything it publishes is a live 30402.
+   * The kind survives here because a client that ignores kind 5 has to find
+   * *something* at the address saying the product is gone, and a hidden,
+   * sold-out draft is the least wrong thing to leave there.
+   */
+  PRODUCT_TOMBSTONE: 30403,
   /** GammaMarkets product collection — we use it as a category */
   CATEGORY: 30405,
 } as const

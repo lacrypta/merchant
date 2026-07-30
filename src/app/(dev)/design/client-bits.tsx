@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 export function SegmentedPreview() {
-  const [status, setStatus] = React.useState<"todos" | "activos" | "borradores">(
+  const [status, setStatus] = React.useState<"todos" | "activos" | "ocultos">(
     "todos"
   )
   return (
@@ -19,7 +19,7 @@ export function SegmentedPreview() {
         options={[
           { value: "todos", label: "Todos" },
           { value: "activos", label: "Activos" },
-          { value: "borradores", label: "Borradores" },
+          { value: "ocultos", label: "Ocultos" },
         ]}
       />
       <p className="text-sm text-muted-foreground">

@@ -1,6 +1,6 @@
 "use client"
 
-import { ShoppingBag, Zap } from "lucide-react"
+import { Loader2, ShoppingBag, Zap } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 import { CartContents, useCanPay } from "@/components/cart/cart-contents"
@@ -21,7 +21,7 @@ import { Odometer } from "@/components/ui/odometer"
  * to spend a column on it rather than keep the modal.
  */
 export function CartAside() {
-  const { merchant, count, hydrated, clear } = useCart()
+  const { merchant, catalog, catalogReady, count, hydrated, clear } = useCart()
   const router = useRouter()
   const canPay = useCanPay()
 
@@ -50,22 +50,21 @@ export function CartAside() {
 
         {/* `hydrated` gates the whole body: the cart comes from localStorage,
             which has no value during SSR, so rendering lines before it flips
-            would be a hydration mismatch on the first paint. */}
-        {!hydrated ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            Tocá el <span className="text-primary">+</span> de un producto para
-            empezar.
-          </p>
+            would be a hydration mismatch on the first paint. `catalogReady`
+            joins it because the catalog now streams in — see EmptyHint. */}
+        {!hydrated || !catalogReady ? (
+          <EmptyHint state="loading" />
         ) : (
           <>
             <div className="-mr-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2">
               <CartContents
                 compact
                 emptyMessage={
-                  <p className="py-6 text-center text-sm text-muted-foreground">
-                    Tocá el <span className="text-primary">+</span> de un
-                    producto para empezar.
-                  </p>
+                  <EmptyHint
+                    state={
+                      Object.keys(catalog).length === 0 ? "no-products" : "empty"
+                    }
+                  />
                 }
               />
             </div>
@@ -89,5 +88,43 @@ export function CartAside() {
         )}
       </div>
     </aside>
+  )
+}
+
+/**
+ * What an empty order says, which depends on why it is empty.
+ *
+ * Telling someone to tap a `+` when the shop has published nothing is advice
+ * they cannot follow — the storefront beside this panel is showing its own
+ * "todavía no publicó productos" at that moment. And neither message is true
+ * while the catalog is still in flight, which is why loading is its own state
+ * rather than a guess at one of the other two.
+ */
+function EmptyHint({ state }: { state: "loading" | "no-products" | "empty" }) {
+  if (state === "loading") {
+    return (
+      <p
+        aria-live="polite"
+        className="flex items-center justify-center gap-2 py-6 text-center text-sm text-muted-foreground"
+      >
+        <Loader2 className="size-4 animate-spin text-primary" aria-hidden />
+        Cargando el catálogo…
+      </p>
+    )
+  }
+
+  if (state === "no-products") {
+    return (
+      <p className="enter-pop py-6 text-center text-sm text-muted-foreground">
+        Esta tienda todavía no tiene productos para agregar.
+      </p>
+    )
+  }
+
+  return (
+    <p className="enter-pop py-6 text-center text-sm text-muted-foreground">
+      Tocá el <span className="text-primary">+</span> de un producto para
+      empezar.
+    </p>
   )
 }

@@ -1,4 +1,5 @@
 import type { SignerPort } from "@/lib/nostr/types"
+import { base64UrlEncode } from "@/lib/nostr/base64"
 import { nowSeconds } from "@/lib/nostr/created-at"
 
 /**
@@ -246,15 +247,3 @@ function uploadToServer(
   })
 }
 
-function base64UrlEncode(value: string): string {
-  const bytes = new TextEncoder().encode(value)
-  let binary = ""
-  const chunkSize = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
-  }
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "")
-}

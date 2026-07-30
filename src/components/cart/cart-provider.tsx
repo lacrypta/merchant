@@ -4,13 +4,14 @@ import * as React from "react"
 
 import {
   addToCart,
+  applyCoupon as applyCouponToCart,
   cartCount,
   cartKey,
-  cartQuote,
   emptyCart,
   parseCart,
   qtyOf,
   reconcile,
+  removeCoupon as removeCouponFromCart,
   removeLine,
   setQty,
   type Cart,
@@ -18,6 +19,7 @@ import {
   type CatalogIndex,
   type LineIssue,
 } from "@/lib/domain/cart"
+import { priceCart, type AppliedCoupon, type PricedCart } from "@/lib/domain/coupon"
 import type { Quote, SatPriceTable } from "@/lib/domain/rates"
 import { useRates } from "@/hooks/use-rates"
 import type { MerchantSummary } from "@/lib/server/storefront"
@@ -53,12 +55,31 @@ interface CartContextValue {
   hydrated: boolean
   count: number
   issues: LineIssue[]
+  /**
+   * False until the catalog has actually arrived.
+   *
+   * Distinguishes "still loading" from "this shop has nothing", which read the
+   * same in an empty index and mean very different things to a shopper.
+   */
+  catalogReady: boolean
   /** null until the first rate snapshot lands. */
   rates: SatPriceTable | null
   ratesAsOf: number | null
   ratesStale: boolean
   refreshRates: () => void
+  /**
+   * What the shopper pays — NET of any applied coupon.
+   *
+   * Deliberately the discounted quote rather than a separate `netQuote`: every
+   * consumer (the panel, the mobile bar, checkout, the invoice) has to agree on
+   * one number, and a second field is a second thing to forget to use.
+   */
   quote: Quote | null
+  /** The full breakdown: gross, net, per-currency discount, unmet conditions. */
+  priced: PricedCart | null
+  coupon: AppliedCoupon | null
+  applyCoupon: (coupon: AppliedCoupon) => void
+  removeCoupon: () => void
   displayCurrency: string
   setDisplayCurrency: (c: string) => void
   panelOpen: boolean
@@ -74,6 +95,9 @@ const CartContext = React.createContext<CartContextValue | null>(null)
 
 const DISPLAY_CURRENCY_KEY = "mm:display-currency"
 
+/** Stable identity: this lands in effect deps that must not re-run per render. */
+const EMPTY_CATALOG: CatalogIndex = {}
+
 function readDisplayCurrency(): string | null {
   try {
     return window.localStorage.getItem(DISPLAY_CURRENCY_KEY)
@@ -84,15 +108,59 @@ function readDisplayCurrency(): string | null {
 
 export function CartProvider({
   merchant,
-  catalog,
+  catalog: catalogProp,
   children,
 }: {
   merchant: MerchantSummary
-  catalog: CatalogIndex
+  /**
+   * The catalog, or a promise of it.
+   *
+   * A promise is what lets the shell paint before the products land: the layout
+   * kicks off the relay read and hands the pending value across the boundary
+   * instead of awaiting it. Everything the cart needs the catalog FOR —
+   * reconciling stored lines against live prices — simply happens when it
+   * arrives, a moment after the page is already usable.
+   */
+  catalog: CatalogIndex | Promise<CatalogIndex>
   children: React.ReactNode
 }) {
   const [cart, setCart] = React.useState<Cart>(() => emptyCart(0))
   const [hydrated, setHydrated] = React.useState(false)
+  /**
+   * Null until a promised catalog settles.
+   *
+   * Derived rather than seeded in an effect: when the caller hands us a plain
+   * index there is nothing to wait for, and writing it into state on mount
+   * would be a render cascade for a value we already had.
+   */
+  const [arrived, setArrived] = React.useState<CatalogIndex | null>(null)
+  const pending = catalogProp instanceof Promise
+  const catalog = pending ? (arrived ?? EMPTY_CATALOG) : catalogProp
+  // An empty index reconciles every stored line away as "gone", so the restore
+  // below waits for the real one.
+  const catalogReady = !pending || arrived !== null
+
+  React.useEffect(() => {
+    if (!(catalogProp instanceof Promise)) return
+    let cancelled = false
+    void (async () => {
+      try {
+        // `await`, not `.then().catch()`: the promise React rebuilds on the
+        // client from a server-passed one is a thenable whose `then` does not
+        // return a chainable promise, so the `.catch` came back undefined.
+        const resolved = await catalogProp
+        if (!cancelled) setArrived(resolved)
+      } catch {
+        // A failed catalog read must not strand the cart in "loading": the
+        // stored lines are still the customer's, and reconciling against
+        // nothing is better than never letting them check out.
+        if (!cancelled) setArrived(EMPTY_CATALOG)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [catalogProp])
   const [issues, setIssues] = React.useState<LineIssue[]>([])
   const [panelOpen, setPanelOpen] = React.useState(false)
   const [displayCurrency, setDisplayCurrencyState] = React.useState("ARS")
@@ -104,6 +172,9 @@ export function CartProvider({
   // Doing both in one effect means the merchant's price changes are noticed
   // before the customer sees a total.
   React.useEffect(() => {
+    // Reconciling against `{}` would drop every line as "gone".
+    if (!catalogReady) return
+
     let cancelled = false
     void (async () => {
       const now = Date.now()
@@ -123,7 +194,7 @@ export function CartProvider({
     return () => {
       cancelled = true
     }
-  }, [key, catalog])
+  }, [key, catalog, catalogReady])
 
   // Persist after every change, but never before hydration — writing the
   // empty initial cart would wipe a real one on first paint.
@@ -175,8 +246,16 @@ export function CartProvider({
     setIssues([])
   }, [])
 
-  const quote = React.useMemo(
-    () => (rates ? cartQuote(cart, rates.satPrice) : null),
+  const applyCoupon = React.useCallback((coupon: AppliedCoupon) => {
+    setCart((prev) => applyCouponToCart(prev, coupon, Date.now()))
+  }, [])
+
+  const removeCoupon = React.useCallback(() => {
+    setCart((prev) => removeCouponFromCart(prev, Date.now()))
+  }, [])
+
+  const priced = React.useMemo(
+    () => (rates ? priceCart(cart.lines, cart.coupon ?? null, rates.satPrice) : null),
     [cart, rates]
   )
 
@@ -184,6 +263,7 @@ export function CartProvider({
     () => ({
       merchant,
       catalog,
+      catalogReady,
       cart,
       hydrated,
       count: hydrated ? cartCount(cart) : 0,
@@ -192,7 +272,11 @@ export function CartProvider({
       ratesAsOf: rates?.asOf ?? null,
       ratesStale: rates?.stale ?? false,
       refreshRates,
-      quote,
+      quote: priced?.net ?? null,
+      priced,
+      coupon: cart.coupon ?? null,
+      applyCoupon,
+      removeCoupon,
       displayCurrency,
       setDisplayCurrency,
       panelOpen,
@@ -206,12 +290,15 @@ export function CartProvider({
     [
       merchant,
       catalog,
+      catalogReady,
       cart,
       hydrated,
       issues,
       rates,
       refreshRates,
-      quote,
+      priced,
+      applyCoupon,
+      removeCoupon,
       displayCurrency,
       setDisplayCurrency,
       panelOpen,

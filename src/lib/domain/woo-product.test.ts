@@ -38,7 +38,6 @@ const woo = (over: Partial<WooProduct> = {}): WooProduct => ({
 const existing = (over: Partial<Product> = {}): Product => ({
   d: "existing-d",
   posId: 42,
-  lifecycle: "published",
   status: "active",
   title: "Viejo",
   sku: "EMP-001",

@@ -1,6 +1,5 @@
-import Link from "next/link"
-
 import { GridBackdrop } from "@/components/brand/grid-backdrop"
+import { SiteFooter } from "@/components/shell/site-footer"
 import { SiteNavbar } from "@/components/shell/site-navbar"
 import { HandleSearchForm } from "@/components/storefront/handle-search-form"
 import { MyStoreCta } from "@/components/storefront/my-store-cta"
@@ -20,21 +19,18 @@ export default function LandingPage() {
             <span className="text-primary">en nostr</span>
           </h1>
 
-          <p className="mt-8 max-w-prose text-lg text-muted-foreground">
-            Publicá productos y servicios como eventos firmados con tu propia
-            clave. Cualquier punto de venta los lee en vivo.
-          </p>
-
-          {/* Only for someone already signed in — a client island on an
-              otherwise fully static landing page. */}
-          <MyStoreCta />
-
+          {/* Directly under the title, in every auth state — this is the
+              landing's primary action, and nothing should sit between them. */}
           <div className="mt-10 w-full max-w-[680px]">
             <HandleSearchForm />
             <p className="mt-4 text-sm text-muted-foreground">
               Buscá una tienda por npub o NIP-05.
             </p>
           </div>
+
+          {/* Only for someone already signed in — a client island on an
+              otherwise fully static landing page. */}
+          <MyStoreCta />
         </section>
 
         <section className="mx-auto w-full max-w-app px-4 pb-20 md:px-8">
@@ -52,20 +48,10 @@ export default function LandingPage() {
               body="Poné el precio en la moneda que quieras. La conversión se calcula al momento de cobrar."
             />
           </div>
-
-          <p className="mt-10 text-center text-sm text-muted-foreground">
-            Hecho por{" "}
-            <Link
-              href="https://lacrypta.ar"
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-primary underline-offset-4 hover:underline"
-            >
-              La Crypta
-            </Link>
-          </p>
         </section>
       </main>
+
+      <SiteFooter />
     </>
   )
 }

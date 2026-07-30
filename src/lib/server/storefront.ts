@@ -163,6 +163,32 @@ export async function loadStorefront(
 }
 
 /**
+ * The merchant themselves: who they are, and whether they can be paid.
+ *
+ * Split from the catalog because the two have very different costs. This is one
+ * kind-0 with `limit: 1` — first relay to answer wins, ~half a second. The
+ * catalog waits on a deletion filter that is deliberately never cut short, and
+ * takes several. Loading them together meant the visitor stared at a skeleton
+ * for the slower of the two before seeing anything at all.
+ */
+export const getMerchantIdentity = cache(
+  async (
+    handle: string
+  ): Promise<{ resolved: ResolvedHandle; profile: MerchantProfile | null } | null> => {
+    const resolved = await resolveHandle(handle)
+    if (!resolved) return null
+    const profile = await loadProfile(resolved.pubkey, resolved.relayHints)
+    return { resolved, profile }
+  }
+)
+
+/** The catalog on its own — the slow half. */
+export const getCatalog = cache(
+  async (pubkey: string, relayHints: readonly string[] = []): Promise<Storefront> =>
+    loadStorefront(pubkey, [...relayHints])
+)
+
+/**
  * Resolve a handle and load its catalog, ONCE per request.
  *
  * React's `cache()` dedupes within a single render pass. Before this, the page
@@ -200,24 +226,31 @@ export interface MerchantSummary {
   canCheckout: boolean
 }
 
+/**
+ * Takes the PROFILE, not the whole Storefront.
+ *
+ * Everything here comes from kind 0, and the cart needs it before the catalog
+ * exists — the storefront loads the two separately so the shell can paint
+ * without waiting on the products.
+ */
 export function toMerchantSummary(
   resolved: ResolvedHandle,
-  store: Storefront
+  profile: MerchantProfile | null
 ): MerchantSummary {
   const displayName =
-    firstNonBlank(store.profile?.displayName, store.profile?.name) ||
+    firstNonBlank(profile?.displayName, profile?.name) ||
     `${nip19.npubEncode(resolved.pubkey).slice(0, 12)}…`
 
   return {
     pubkey: resolved.pubkey,
     npub: nip19.npubEncode(resolved.pubkey),
     displayName,
-    picture: store.profile?.picture,
+    picture: profile?.picture,
     // NIP-05 is identification, not verification: only surface it when the
     // domain actually resolved back to this pubkey.
     nip05: resolved.via === "nip05" ? resolved.nip05 : undefined,
-    lud16: store.profile?.lud16,
-    canCheckout: Boolean(store.profile?.lud16),
+    lud16: profile?.lud16,
+    canCheckout: Boolean(profile?.lud16),
   }
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   CART_MAX_AGE_MS,
   addToCart,
+  applyCoupon,
   cartCount,
   cartQuote,
   emptyCart,
@@ -10,6 +11,7 @@ import {
   parseCart,
   qtyOf,
   reconcile,
+  removeCoupon,
   removeLine,
   setQty,
   subtotalsByCurrency,
@@ -208,5 +210,53 @@ describe("parseCart", () => {
       JSON.stringify({ v: 1, updatedAt: NOW, lines: [{ qty: 1, title: "", unitAmount: 1, currency: "ARS" }] }),
     ]
     for (const raw of bad) expect(parseCart(raw, NOW), String(raw).slice(0, 40)).toBeNull()
+  })
+})
+
+describe("coupon on the cart", () => {
+  const coupon = {
+    nonce: "hcLPDzERvvHzS4Vn0OLbAQ",
+    couponId: "33333333-3333-4333-8333-333333333333",
+    name: "Promo",
+    benefit: { type: "percent", percent: 10 } as const,
+  }
+
+  it("applies and removes without touching the lines", () => {
+    const withLine = addToCart(emptyCart(NOW), item(), NOW)
+    const withCoupon = applyCoupon(withLine, coupon, NOW + 1)
+    expect(withCoupon.coupon).toEqual(coupon)
+    expect(withCoupon.lines).toEqual(withLine.lines)
+
+    const without = removeCoupon(withCoupon, NOW + 2)
+    expect(without.lines).toEqual(withLine.lines)
+    // Genuinely absent, not present-and-undefined: JSON.stringify keeps the
+    // difference and localStorage is JSON.
+    expect("coupon" in without).toBe(false)
+  })
+
+  it("round-trips through storage", () => {
+    const raw = JSON.stringify(applyCoupon(addToCart(emptyCart(NOW), item(), NOW), coupon, NOW))
+    expect(parseCart(raw, NOW)?.coupon).toEqual(coupon)
+  })
+
+  it("drops a MALFORMED coupon but keeps the cart", () => {
+    // The lines are still exactly what the shopper chose; throwing them away to
+    // punish a bad discount would be the more expensive mistake.
+    const cases = [
+      { ...coupon, nonce: "too-short" },
+      { ...coupon, benefit: { type: "percent", percent: 900 } },
+      { ...coupon, benefit: { type: "nonsense" } },
+      { ...coupon, couponId: "" },
+      "not an object",
+    ]
+    for (const bad of cases) {
+      const raw = JSON.stringify({
+        ...addToCart(emptyCart(NOW), item(), NOW),
+        coupon: bad,
+      })
+      const parsed = parseCart(raw, NOW)
+      expect(parsed?.lines, JSON.stringify(bad).slice(0, 40)).toHaveLength(1)
+      expect(parsed?.coupon).toBeUndefined()
+    }
   })
 })

@@ -10,8 +10,10 @@ import { InvoiceQr } from "@/components/checkout/invoice-qr"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Odometer } from "@/components/ui/odometer"
+import { Skeleton } from "@/components/ui/skeleton"
 import { TickerChip } from "@/components/ui/ticker-chip"
 import { decodeInvoice, DEFAULT_EXPIRY_SECONDS } from "@/lib/domain/bolt11"
+import type { AppliedCoupon } from "@/lib/domain/coupon"
 import { formatPrice } from "@/lib/domain/price"
 import {
   QUOTE_TTL_MS,
@@ -33,6 +35,7 @@ import {
 } from "@/lib/domain/order"
 import { clearOrder, loadOrder, saveOrder } from "@/lib/checkout/order-store"
 import { usePaymentWatch } from "@/lib/checkout/use-payment-watch"
+import { nowSeconds } from "@/lib/nostr/created-at"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 
 interface PayParams {
@@ -56,9 +59,32 @@ type Phase =
   | { k: "invoicing" }
   | { k: "error"; message: string }
 
-export function CheckoutScreen() {
-  const { merchant, cart, count, quote, rates, displayCurrency, clear, hydrated } =
-    useCart()
+export function CheckoutScreen({
+  /**
+   * The coupon input, resolved on the server and passed in as an already
+   * rendered node. Absent — or null once it resolves — when this shop has not
+   * announced coupons pointing at this deployment.
+   */
+  couponSlot,
+}: {
+  couponSlot?: React.ReactNode
+}) {
+  const {
+    merchant,
+    cart,
+    count,
+    quote,
+    priced,
+    coupon,
+    removeCoupon,
+    rates,
+    displayCurrency,
+    clear,
+    hydrated,
+  } = useCart()
+  // The shop's own details come from the layout and are known immediately; only
+  // the basket and the wallet are still in flight. That is what makes a useful
+  // loading screen possible here instead of a blank one.
 
   const [order, setOrder] = React.useState<Order | null>(null)
   const [params, setParams] = React.useState<PayParams | null>(null)
@@ -115,10 +141,35 @@ export function CheckoutScreen() {
       if (cancelled) return
 
       if (existing) {
-        const done =
-          existing.status === "paid" || existing.status === "manually_confirmed"
+        // A paid order is never restored. It is dropped from storage the moment
+        // payment lands (see below), so reaching here means a copy survived —
+        // another tab, or a session that predates that rule — and showing it
+        // would greet the next customer with somebody else's receipt.
+        if (existing.status === "paid") {
+          clearOrder(merchant.pubkey)
+          try {
+            await resolveParams()
+            if (!cancelled) setPhase({ k: "ready" })
+          } catch (e) {
+            if (!cancelled) {
+              setPhase({
+                k: "error",
+                message:
+                  e instanceof Error ? e.message : "No pudimos contactar a la billetera.",
+              })
+            }
+          }
+          return
+        }
+
+        const done = existing.status === "manually_confirmed"
+        // The coupon is part of the order's identity: it changes the zap
+        // request's tags, and therefore the event hash that IS the order number.
+        // A restored order carrying a different coupon than the cart would show
+        // a total nobody agreed to.
         const sameBasket =
-          existing.itemsHash === canonicalItemsHash(toOrderLines(cart.lines))
+          existing.itemsHash === canonicalItemsHash(toOrderLines(cart.lines)) &&
+          (existing.coupon?.nonce ?? null) === (cart.coupon?.nonce ?? null)
 
         if (sameBasket || (done && cart.lines.length === 0)) {
           // Either the order still matches, or it is a receipt the customer
@@ -169,7 +220,12 @@ export function CheckoutScreen() {
       setOrder((current) => {
         if (!current) return current
         const next = settle(current, proof, Date.now())
-        saveOrder(merchant.pubkey, next)
+        // Paid orders leave storage instead of being written back — a later
+        // proof for the same order must not put the receipt back where the
+        // next customer would find it. Same idempotent-write discipline as
+        // saveOrder, so a StrictMode double-invoke is harmless.
+        if (next.status === "paid") clearOrder(merchant.pubkey)
+        else saveOrder(merchant.pubkey, next)
         return next
       })
     },
@@ -182,15 +238,30 @@ export function CheckoutScreen() {
   const paid = order?.status === "paid"
   const confirmed = order?.status === "manually_confirmed"
 
-  // Clear the cart once, on payment — but keep the order record so the
-  // customer can still hold the screen up to the cashier.
+  /**
+   * A paid order is finished business: forget it, once.
+   *
+   * Both the cart and the STORED order go. Keeping the order in localStorage
+   * meant the next person to open checkout on this phone — the next customer at
+   * the same counter — was shown somebody else's receipt, and had to work out
+   * that the "Pago recibido" on screen was not theirs.
+   *
+   * It stays in React state, so whoever just paid keeps the receipt in front of
+   * them for as long as they hold the screen up. It is gone on the next visit,
+   * which is the point.
+   *
+   * Deliberately NOT for `manually_confirmed`: that order is still waiting on a
+   * payment nobody has verified, and dropping it would lose the only record the
+   * customer has that they said they paid.
+   */
   const clearedRef = React.useRef(false)
   React.useEffect(() => {
     if (paid && !clearedRef.current) {
       clearedRef.current = true
       clear()
+      clearOrder(merchant.pubkey)
     }
-  }, [paid, clear])
+  }, [paid, clear, merchant.pubkey])
 
   /**
    * @param opts.params  Use these instead of state — the expiry retry passes
@@ -207,6 +278,49 @@ export function CheckoutScreen() {
 
     try {
       let working = existing ?? order
+
+      /**
+       * Redeem the coupon before asking for an invoice.
+       *
+       * This is the one ordering that cannot be wrong. Claiming AFTER the
+       * invoice would mean handing out a discounted invoice that a second till
+       * could also honour with the same nonce; claiming here means the worst
+       * case is a customer who abandons a paid-for redemption, which costs the
+       * merchant one coupon they can re-issue in two taps.
+       *
+       * Once claimed, `claimedAt` is recorded on the order so a re-quote at a
+       * fresh exchange rate — which happens routinely on a checkout screen left
+       * open — never tries to spend the nonce twice.
+       */
+      const activeCoupon = working?.coupon ?? coupon
+      let claimed: AppliedCoupon | undefined = activeCoupon ?? undefined
+
+      if (activeCoupon && !activeCoupon.claimedAt) {
+        const outcome = await claimCoupon(activeCoupon.nonce)
+
+        if (outcome.kind === "unavailable") {
+          setPhase({
+            k: "error",
+            message: "No pudimos validar el cupón. Probá de nuevo en unos segundos.",
+          })
+          return
+        }
+
+        if (outcome.kind === "spent") {
+          // Somebody redeemed it between the shopper applying it and paying.
+          // Drop it and make them re-quote: silently charging the full price
+          // after showing a discount would be the worse betrayal.
+          removeCoupon()
+          if (working) {
+            clearOrder(merchant.pubkey)
+            setOrder(null)
+          }
+          setPhase({ k: "error", message: outcome.message })
+          return
+        }
+
+        claimed = { ...activeCoupon, claimedAt: outcome.claimedAt }
+      }
 
       // Mint the order (and therefore the order id) exactly once. Re-invoicing
       // resubmits the SAME signed zap request, which is why the id survives a
@@ -228,6 +342,9 @@ export function CheckoutScreen() {
           amountMsat: quote.msat,
           comment: null,
           createdAt: newOrderCreatedAt(),
+          coupon: claimed
+            ? { applied: claimed, discount: priced?.entries ?? [] }
+            : undefined,
         })
         const zapRequest = signZapRequest(fitted.template)
         const payee: PayeePin = {
@@ -256,7 +373,13 @@ export function CheckoutScreen() {
           invoices: [],
           proofs: [],
           anomalies: [],
+          ...(claimed ? { coupon: claimed } : {}),
         }
+        commit(working)
+      } else if (claimed && !working.coupon?.claimedAt) {
+        // Re-invoicing an order whose coupon we just redeemed: record the
+        // redemption so a third quote does not try to spend the nonce again.
+        working = { ...working, coupon: claimed, updatedAt: Date.now() }
         commit(working)
       }
 
@@ -385,6 +508,20 @@ export function CheckoutScreen() {
     )
   }
 
+  /**
+   * The cart is restored from localStorage and then reconciled against the
+   * catalog, which now streams in from relays — so for a moment there is no
+   * basket to show. Saying "tu pedido está vacío" during that moment is a lie
+   * that sends someone back to the shop for items they already chose.
+   */
+  if (!hydrated) {
+    return (
+      <Shell npub={merchant.npub}>
+        <CheckoutBootstrap merchant={merchant} />
+      </Shell>
+    )
+  }
+
   if (count === 0 && !order) {
     return (
       <Shell npub={merchant.npub}>
@@ -393,6 +530,10 @@ export function CheckoutScreen() {
     )
   }
 
+  // Prefer the ORDER's coupon once one exists: the order is what was signed
+  // and what the invoice charges for, so after it is minted the cart no longer
+  // decides what this screen shows.
+  const activeCouponForDisplay = order?.coupon ?? coupon
   const expired = live !== null && now > live.displayExpiresAt
   const secondsLeft = live ? Math.max(0, Math.round((live.displayExpiresAt - now) / 1000)) : 0
 
@@ -427,6 +568,23 @@ export function CheckoutScreen() {
             ))}
           </ul>
 
+          {/* The coupon gets its own row rather than being folded into the
+              line items: the shopper should be able to see the discount they
+              are getting, and so should the merchant reading the receipt. */}
+          {activeCouponForDisplay && (priced?.entries.length ?? 0) > 0 ? (
+            <div className="mt-3 flex justify-between gap-3 border-t border-border pt-3 text-sm">
+              <span className="min-w-0 truncate text-muted-foreground">
+                Cupón {activeCouponForDisplay.name}
+              </span>
+              <span className="numeric shrink-0 text-success">
+                −
+                {priced!.entries
+                  .map((d) => formatPrice(d.amount, d.currency))
+                  .join(" − ")}
+              </span>
+            </div>
+          ) : null}
+
           <div className="mt-4 flex flex-wrap items-baseline justify-between gap-2 border-t border-border pt-3">
             <span className="font-semibold">Total</span>
             <span className="text-price-lg text-primary">
@@ -448,6 +606,10 @@ export function CheckoutScreen() {
           </div>
         </section>
 
+        {/* Hidden once an invoice is live: the amount is locked at that point,
+            and offering a coupon that cannot change it is a trap. */}
+        {!live ? couponSlot : null}
+
         {phase.k === "error" ? (
           <p
             role="alert"
@@ -465,6 +627,13 @@ export function CheckoutScreen() {
                 de pedido no cambia.
               </p>
             ) : null}
+            {/* The wallet round trip has no knowable length, so this says
+                "working" rather than inventing a percentage. It sits where the
+                button will be, so nothing moves when it is replaced. */}
+            {phase.k === "loading" ? (
+              <LoadingBar label="Conectando con la billetera del comercio…" />
+            ) : null}
+
             <Button
               fullWidth
               disabled={phase.k === "invoicing" || phase.k === "loading" || !quote}
@@ -523,6 +692,58 @@ export function CheckoutScreen() {
       </div>
     </Shell>
   )
+}
+
+type ClaimOutcome =
+  | { kind: "claimed"; claimedAt: number }
+  /** Already redeemed, or expired — the coupon has to come off the order. */
+  | { kind: "spent"; message: string }
+  /** We could not reach the service. Retryable; the nonce is untouched. */
+  | { kind: "unavailable" }
+
+/**
+ * Redeem a nonce.
+ *
+ * `status: "claimed"` from the server means somebody else got there first —
+ * including, possibly, this same browser on a previous attempt whose response we
+ * never saw. Either way the coupon is gone and the shopper needs a fresh quote,
+ * so both collapse into "spent".
+ */
+async function claimCoupon(nonce: string): Promise<ClaimOutcome> {
+  try {
+    const res = await fetch("/api/coupons/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce }),
+      cache: "no-store",
+    })
+    const data = (await res.json()) as {
+      status?: string
+      claimedAt?: number | null
+      error?: string
+    }
+
+    if (res.status === 404 || res.status === 410) {
+      return {
+        kind: "spent",
+        message: data.error ?? "Ese cupón ya no se puede usar. Generá el pedido de nuevo.",
+      }
+    }
+    if (!res.ok) return { kind: "unavailable" }
+
+    if (data.status === "success") {
+      return { kind: "claimed", claimedAt: data.claimedAt ?? nowSeconds() }
+    }
+    if (data.status === "claimed") {
+      return {
+        kind: "spent",
+        message: "Ese cupón ya fue usado. Generá el pedido de nuevo.",
+      }
+    }
+    return { kind: "unavailable" }
+  } catch {
+    return { kind: "unavailable" }
+  }
 }
 
 function ManualConfirm({
@@ -705,3 +926,64 @@ function Shell({ npub, children }: { npub: string; children: React.ReactNode }) 
 }
 
 export { clearOrder, buildZapRequestTemplate }
+
+/**
+ * A bar for a wait whose length we cannot know.
+ *
+ * Every wait on this screen is somebody else's network: a relay fan-out, a
+ * merchant's LNURL host. A percentage would be invented, and an invented
+ * percentage that sticks at 80% is worse than an honest animation.
+ */
+function LoadingBar({ label }: { label: string }) {
+  return (
+    <div className="space-y-2" role="status" aria-live="polite">
+      <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin text-primary" aria-hidden />
+        {label}
+      </p>
+      <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div className="bar-indeterminate h-full w-1/3 rounded-full bg-primary" />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The checkout before the basket has landed.
+ *
+ * Deliberately NOT a blank screen: the shop is already known, so its name goes
+ * up immediately and only the lines are drawn as placeholders. Same card, same
+ * paddings, same total row as the real summary, so the swap is a fill rather
+ * than a jump.
+ */
+function CheckoutBootstrap({ merchant }: { merchant: { displayName: string } }) {
+  return (
+    <div className="space-y-6">
+      <header className="space-y-2">
+        <h1 className="text-h1">Pagar</h1>
+        <p className="text-sm text-muted-foreground">A {merchant.displayName}</p>
+      </header>
+
+      <section
+        aria-busy="true"
+        className="enter-pop rounded-2xl border border-border bg-card p-4"
+      >
+        <div className="space-y-2.5">
+          {[0, 1].map((i) => (
+            <div key={i} className="flex justify-between gap-3">
+              <Skeleton className="h-4 w-40 max-w-[60%]" />
+              <Skeleton className="h-4 w-16 shrink-0" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex items-baseline justify-between gap-2 border-t border-border pt-3">
+          <span className="font-semibold">Total</span>
+          <Skeleton className="h-7 w-28" />
+        </div>
+      </section>
+
+      <LoadingBar label="Cargando tu pedido…" />
+    </div>
+  )
+}

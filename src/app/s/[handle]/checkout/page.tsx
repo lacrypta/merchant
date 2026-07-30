@@ -2,7 +2,13 @@ import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 
+import { Suspense } from "react"
+
 import { CheckoutScreen } from "@/components/checkout/checkout-screen"
+import {
+  CouponSlot,
+  CouponSlotSkeleton,
+} from "@/components/storefront/coupon-availability"
 import { Button } from "@/components/ui/button"
 import { getStorefront, toMerchantSummary } from "@/lib/server/storefront"
 
@@ -32,7 +38,7 @@ export default async function CheckoutPage({
   const data = await getStorefront(decodeURIComponent(handle))
   if (!data) notFound()
 
-  const merchant = toMerchantSummary(data.resolved, data.store)
+  const merchant = toMerchantSummary(data.resolved, data.store.profile)
 
   if (!merchant.canCheckout) {
     return (
@@ -51,5 +57,24 @@ export default async function CheckoutPage({
     )
   }
 
-  return <CheckoutScreen />
+  /**
+   * The coupon input arrives as a slot, resolved on the server.
+   *
+   * It renders nothing unless the merchant has published an announcement
+   * pointing at THIS deployment — their codes could live in another server's
+   * database, and a box that can only answer "cupón inexistente" is worse than
+   * no box. Streamed so the payment screen does not wait on that relay read.
+   */
+  return (
+    <CheckoutScreen
+      couponSlot={
+        <Suspense fallback={<CouponSlotSkeleton />}>
+          <CouponSlot
+            pubkey={data.resolved.pubkey}
+            relayHints={data.resolved.relayHints}
+          />
+        </Suspense>
+      }
+    />
+  )
 }
