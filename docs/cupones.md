@@ -124,27 +124,50 @@ Cómo verificarlo, sin llamarnos:
 
 ## 4. Endpoints
 
-Todos bajo `/api/coupons`. Todos con CORS abierto (`Authorization` incluido en el preflight, que no es un header safelisted), `Cache-Control: no-store`, y errores en castellano dentro de `{ "error": "…" }`.
+Todos con CORS abierto (`Authorization` incluido en el preflight, que no es un header safelisted), `Cache-Control: no-store`, y errores en castellano dentro de `{ "error": "…" }`.
+
+**Auth** dice qué acepta cada ruta. Donde dice *NIP-98 o Bearer*, las dos formas son equivalentes y dan el mismo tenant: firmá un evento por request, o cambiá una firma por una sesión (§4.1). Un POS que ya anda no necesita cambiar nada.
 
 | Método y ruta | Auth | Para qué |
 |---|---|---|
-| `GET /api/coupons` | NIP-98 | Cupones + emisores + anuncio guardado, en una sola llamada |
-| `POST /api/coupons` | NIP-98 | Crear |
-| `PATCH /api/coupons/{id}` | NIP-98 | Editar |
-| `DELETE /api/coupons/{id}` | NIP-98 | Borra si nunca se emitió; si no, archiva |
-| `GET /api/coupons/{id}/mints` | NIP-98 | Las emisiones de ese cupón |
-| `DELETE /api/coupons/{id}/mints/{nonce}` | NIP-98 | Anular una emisión sin canjear |
-| `POST /api/coupons/minters` | NIP-98 | Autorizar un npub, nprofile, hex o NIP-05 |
-| `DELETE /api/coupons/minters/{pubkey}` | NIP-98 | Revocar |
-| `PUT /api/coupons/discovery` | NIP-98 | Guardar el anuncio firmado |
-| `GET /api/coupons/mintable` | NIP-98 | Qué puede emitir el npub que pregunta |
-| **`POST /api/coupons/mint`** | NIP-98 + autorizado | **Emitir**. La `mintUrl` del anuncio |
+| `POST /api/auth/session` | NIP-98 | Cambiar una firma por un JWT de 12 h |
+| `GET /api/coupons` | NIP-98 o Bearer | Cupones + emisores + anuncio guardado, en una sola llamada |
+| `POST /api/coupons` | NIP-98 o Bearer | Crear |
+| `PATCH /api/coupons/{id}` | NIP-98 o Bearer | Editar |
+| `DELETE /api/coupons/{id}` | NIP-98 o Bearer | Borra si nunca se emitió; si no, archiva |
+| `GET /api/coupons/{id}/mints` | NIP-98 o Bearer | Las emisiones de ese cupón |
+| `DELETE /api/coupons/{id}/mints/{nonce}` | NIP-98 o Bearer | Anular una emisión sin canjear |
+| `POST /api/coupons/minters` | NIP-98 o Bearer | Autorizar un npub, nprofile, hex o NIP-05 |
+| `DELETE /api/coupons/minters/{pubkey}` | NIP-98 o Bearer | Revocar |
+| `PUT /api/coupons/discovery` | NIP-98 o Bearer | Guardar el anuncio firmado |
+| `GET /api/coupons/mintable` | NIP-98 o Bearer | Qué puede emitir el npub que pregunta |
+| **`POST /api/coupons/mint`** | NIP-98 o Bearer, + autorizado | **Emitir**. La `mintUrl` del anuncio |
 | **`GET/POST /api/coupons/claim`** | sólo el nonce | **Consultar / canjear**. La `claimUrl` |
 | `GET /api/coupons/manager` | — | El pubkey que firma los vouchers |
 
-Una sola llamada devuelve cupones + emisores + anuncio porque cada request NIP-98 cuesta una firma, y en un bunker NIP-46 una firma es un viaje al teléfono del comerciante.
+Una sola llamada devuelve cupones + emisores + anuncio: es un viaje de red menos, y sin sesión era además una firma menos.
 
-### 4.1 NIP-98
+### 4.1 Sesión — `POST /api/auth/session`
+
+Firmás un NIP-98 una vez y recibís un bearer que vale para todo lo demás:
+
+```jsonc
+// POST /api/auth/session   ·   Authorization: Nostr <base64>   ·   sin cuerpo
+{ "token": "eyJhbGciOi…", "pubkey": "<hex>", "expiresAt": 1785000000 }
+```
+
+Después: `Authorization: Bearer <token>`. Es un JWT HS256 con tres claims — `sub` (el pubkey), `iat`, `exp` — firmado con `SESSION_JWT_SECRET`.
+
+**No es una mejora de seguridad, es un intercambio.** NIP-98 ata cada token a un pubkey, una URL, un método, un hash de cuerpo, sesenta segundos y un solo uso. El bearer ata un pubkey y un vencimiento: robarlo da todo lo que ese pubkey puede hacer hasta que caduque. Lo que se compra a cambio es no pagar una firma por request, que en un bunker NIP-46 es un viaje al teléfono del comerciante por cada click.
+
+Consecuencias que conviene saber:
+
+- **12 horas**, un turno. El navegador lo guarda en `sessionStorage`, así que además muere al cerrar la pestaña.
+- **Todas las rutas lo aceptan, emisión incluida.** Dejar `mint` sólo con NIP-98 no protegería nada: con el mismo bearer se llama a `POST /api/coupons/minters`, uno se agrega como emisor autorizado, y emite con su propia firma.
+- **No hay endpoint para cerrar sesión.** El token no tiene estado del lado del servidor, así que no hay nada que revocar: salir es soltarlo. Si necesitás invalidar todo ya, rotá `SESSION_JWT_SECRET`.
+- **Errores**: `401` con `reason: "session-expired"` o `reason: "session-invalid"`. **Re-emití ante cualquiera de los dos.** Sin `SESSION_JWT_SECRET` la clave es aleatoria por proceso, así que un reinicio hace que los tokens vivos fallen como *invalid* y no como *expired*.
+
+### 4.2 NIP-98
 
 Kind `27235` en el header `Authorization: Nostr <base64>`. Se verifica en este orden — barato primero, y la firma antes de confiar en cualquier tag:
 
@@ -162,7 +185,7 @@ Hay una caché de ids vistos en proceso (150s) contra replay. Es honesta sobre l
 
 > **Si estás implementando un cliente:** el token tiene que llevar **algo que lo haga único**. Todo lo demás es determinístico y `created_at` tiene resolución de un segundo, así que dos emisiones del mismo cupón en el mismo segundo hashean al mismo id y la segunda se rechaza con `reason: "replay"`. Nuestro cliente agrega un tag `nonce` aleatorio; una caja que emite varios cupones por segundo tiene que hacer lo mismo.
 
-### 4.2 Emisión
+### 4.3 Emisión
 
 `POST /api/coupons/mint` con `{ "couponId": "<uuid>" }`. El que firma tiene que ser el dueño o estar en la lista de emisores.
 
@@ -183,7 +206,7 @@ Errores: `403` no autorizado · `404` no existe · `409` se agotaron · `410` ar
 
 El nonce son 16 bytes al azar en base64url (22 caracteres): imposible de adivinar y entra en cualquier QR. **Es un token al portador** — quien lo tiene puede canjear.
 
-### 4.3 Canje
+### 4.4 Canje
 
 **`GET /api/coupons/claim?nonce=…`** consulta sin consumir. Siempre `200` para un nonce conocido, con el motivo en `status`: `minted`, `claimed`, `expired` o `voided`. Es un endpoint de previsualización: un error HTTP haría que todos esos casos parezcan una falla de red.
 
@@ -205,7 +228,7 @@ RETURNING *;
 
 Dos cajas escaneando el mismo QR en el mismo instante producen un UPDATE que devuelve fila y otro que no. El segundo se reporta como ya canjeado. Un read-then-write sería una carrera con plata del otro lado.
 
-### 4.4 Anulación
+### 4.5 Anulación
 
 `DELETE /api/coupons/{id}/mints/{nonce}` revoca una emisión que nunca se canjeó.
 
@@ -308,11 +331,15 @@ Cuatro tablas ([`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts)):
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
 COUPON_MANAGER_NSEC=nsec1…       # la identidad que firma los vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
+SESSION_JWT_SECRET=…             # firma los JWT de sesión (§4.1)
 ```
 
 Sin `DATABASE_URL` o sin `COUPON_MANAGER_NSEC` los endpoints de cupones responden `503` y el resto de la app funciona igual: no tener base es un estado soportado.
 
-La clave del manager **no tiene fallback aleatorio** (a diferencia de `LN_PROXY_SECRET`). Una clave que rota en silencio invalidaría todos los anuncios que los comerciantes ya publicaron; que falte es un 503, a propósito.
+Tres variables firman cosas y cada una falla distinto, a propósito:
+
+- **`COUPON_MANAGER_NSEC` no tiene fallback**: firma artefactos publicados y longevos —vouchers, el anuncio— y una clave que rota en silencio los invalida meses después, sin aviso. Que falte es un 503.
+- **`SESSION_JWT_SECRET` sí tiene fallback aleatorio por proceso**, como `LN_PROXY_SECRET`: lo peor que pasa es una firma de más. **Pero con más de una instancia hay que setearla**, o un token emitido por A lo rechaza B y el cliente re-emite en request por medio — peor que no tener sesión.
 
 ```bash
 npm run db:generate   # después de tocar el schema

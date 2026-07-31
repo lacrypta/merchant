@@ -52,6 +52,7 @@ import {
   type ZapReceiptOrder,
 } from "@/lib/domain/zap-order"
 import { queryEvents } from "@/lib/nostr/backend"
+import { verifySignedEventCached } from "@/lib/nostr/verify"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 import { CACHE, qk } from "@/lib/query/keys"
 import { serializeCsv } from "@/lib/csv"
@@ -506,12 +507,18 @@ export function OrdersScreen() {
 
   const receiptsQuery = useQuery({
     queryKey: [...qk.orders(pubkey ?? ""), relaysKey],
-    queryFn: () =>
-      queryEvents(
+    queryFn: async () => {
+      const events = await queryEvents(
         [{ kinds: [KINDS.ZAP_RECEIPT], "#p": [pubkey!] }],
         relays,
         { label: "Órdenes cobradas" }
-      ),
+      )
+      // Warm the verify memo here, inside the await that already shows a
+      // skeleton. Left to the parse below it would run two secp256k1 checks per
+      // order during a commit — seconds of frozen tab for a busy merchant.
+      for (const e of events) verifySignedEventCached(e)
+      return events
+    },
     enabled: !!pubkey,
     ...CACHE.orders,
   })

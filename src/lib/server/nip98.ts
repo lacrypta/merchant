@@ -10,6 +10,7 @@ import {
   type Nip98Failure,
 } from "@/lib/domain/nip98"
 import { nowSeconds } from "@/lib/nostr/created-at"
+import { MAX_AUTH_HEADER_BYTES, MAX_BODY_BYTES, readBoundedBody } from "@/lib/server/http"
 
 /**
  * The request-facing half of NIP-98. The pure verification lives in
@@ -22,10 +23,8 @@ import { nowSeconds } from "@/lib/nostr/created-at"
  * has been told what this deployment's origin is.
  */
 
-/** Bodies here are a handful of fields; anything larger is not ours. */
-export const MAX_BODY_BYTES = 16_384
-/** A signed event base64s to ~700 bytes. 8 KB is generous and bounded. */
-export const MAX_AUTH_HEADER_BYTES = 8_192
+// Re-exported from http.ts, where the body reader that enforces them lives.
+export { MAX_AUTH_HEADER_BYTES, MAX_BODY_BYTES }
 
 export type Nip98Reason = Nip98Failure | "missing" | "replay" | "too-large"
 
@@ -131,31 +130,9 @@ export async function requireNip98(request: Request): Promise<Nip98Auth> {
     return { ok: false, status: 401, error: INVALID, reason: "too-large" }
   }
 
-  const declared = Number(request.headers.get("content-length") ?? "0")
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    return {
-      ok: false,
-      status: 413,
-      error: "El cuerpo es demasiado grande.",
-      reason: "too-large",
-    }
-  }
-
-  let rawBody = ""
-  try {
-    rawBody = await request.text()
-  } catch {
-    return { ok: false, status: 401, error: INVALID, reason: "malformed" }
-  }
-  // content-length can lie or be absent (chunked); this is the real check.
-  if (utf8ToBytes(rawBody).length > MAX_BODY_BYTES) {
-    return {
-      ok: false,
-      status: 413,
-      error: "El cuerpo es demasiado grande.",
-      reason: "too-large",
-    }
-  }
+  const body = await readBoundedBody(request)
+  if (!body.ok) return body
+  const { rawBody } = body
 
   const event = decodeNip98Header(header)
   if (!event) return { ok: false, status: 401, error: INVALID, reason: "malformed" }

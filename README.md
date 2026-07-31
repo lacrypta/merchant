@@ -35,6 +35,7 @@ Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en 
 | `DATABASE_URL` | Postgres, **sólo** para cupones. Sin esto, `/api/coupons/*` responde 503 y el resto de la app anda igual. |
 | `COUPON_MANAGER_NSEC` | La identidad nostr de este servicio: firma los cupones que emite. Sin esto no se puede emitir ni canjear. |
 | `NEXT_PUBLIC_APP_URL` | El origen público. En producción **conviene setearlo**: es lo único que hace que la validación NIP-98 ignore los headers `x-forwarded-*`, que cualquiera puede falsificar. |
+| `SESSION_JWT_SECRET` | Firma los JWT de sesión, así el comerciante firma con nostr una vez por turno en vez de una vez por click. Sin esto se usa una clave por proceso: aceptable en una sola instancia, **hay que setearla con más de una** o los tokens de una los rechaza la otra. |
 | `LN_PROXY_SECRET` | Firma los tokens del proxy LNURL. Sin esto se usa una clave por proceso y los pagos en vuelo se cortan en cada deploy. |
 
 ## Cómo se modela en nostr
@@ -47,7 +48,7 @@ Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en 
 | `5` | Borrado (NIP-09) |
 | `0` · `10002` · `10063` | Perfil · relays NIP-65 · servidores Blossom |
 | `30078` | Datos de la app (NIP-78): config de WooCommerce (cifrada) y endpoints de cupones (en claro) |
-| `27235` | Autenticación HTTP (NIP-98) hacia la API de cupones |
+| `27235` | Autenticación HTTP (NIP-98). Se firma una vez por sesión y después va un JWT |
 | `20402` | Cupón firmado por este servicio. Nunca se publica: viaja en la respuesta HTTP. |
 
 Decisiones que no son obvias y conviene no revertir sin leer el porqué:
@@ -79,6 +80,7 @@ docker run -d --name merchant-pg -p 55432:5432 \
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
 COUPON_MANAGER_NSEC=nsec1…       # la identidad que firma los vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
+SESSION_JWT_SECRET=…             # opcional en una sola instancia
 ```
 
 ```bash

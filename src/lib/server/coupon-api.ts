@@ -15,7 +15,18 @@ import type { DefinitionWithCounts } from "@/lib/server/coupon-store"
 import { getDb, type Db } from "@/lib/server/db"
 import { parseNip05, resolveNip05 } from "@/lib/server/nip05"
 import type { CouponDefinitionRow, CouponMintRow, CouponMinterRow } from "@/lib/server/db/schema"
+import { nowSeconds } from "@/lib/nostr/created-at"
+import {
+  MAX_AUTH_HEADER_BYTES,
+  cors,
+  fail,
+  noStore,
+  ok,
+  preflight,
+  readBoundedBody,
+} from "@/lib/server/http"
 import { requireNip98 } from "@/lib/server/nip98"
+import { bearerFromHeader, readSessionToken } from "@/lib/server/session-token"
 
 /**
  * The bits every coupon route repeats: CORS, the 503 preconditions, NIP-98, and
@@ -26,41 +37,9 @@ import { requireNip98 } from "@/lib/server/nip98"
  * `Authorization` in the preflight and fails only for cross-origin POS clients.
  */
 
-/**
- * Wide-open CORS, like every other route here — the difference is that these
- * respond to `Authorization`, which is NOT a CORS-safelisted header, so a
- * cross-origin POS gets a preflight and would be refused without it named.
- */
-export function cors(methods: string): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": `${methods}, OPTIONS`,
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400",
-  }
-}
-
-/** Coupon state is never cacheable: the answer changes the moment it is used. */
-export function noStore(methods: string): Record<string, string> {
-  return { ...cors(methods), "Cache-Control": "no-store" }
-}
-
-export function preflight(methods: string): NextResponse {
-  return new NextResponse(null, { status: 204, headers: cors(methods) })
-}
-
-export function fail(
-  message: string,
-  status: number,
-  methods: string,
-  extra?: Record<string, unknown>
-): NextResponse {
-  return NextResponse.json({ error: message, ...extra }, { status, headers: noStore(methods) })
-}
-
-export function ok(payload: unknown, methods: string, status = 200): NextResponse {
-  return NextResponse.json(payload, { status, headers: noStore(methods) })
-}
+// The transport-level helpers live in http.ts now that a second family of
+// routes needs them; re-exported so every coupon route keeps its imports.
+export { cors, fail, noStore, ok, preflight }
 
 // ───────────────────────────────────────────────────────────────────────────
 // Preconditions
@@ -92,11 +71,34 @@ export function requireManager(
   return { manager }
 }
 
-/** Authenticate, or the 401/413 to return instead. */
+/**
+ * Authenticate, or the 401/413 to return instead.
+ *
+ * Two schemes reach the same tenant. `Nostr` is a NIP-98 event signed for this
+ * exact request — what a third-party POS sends, and what the browser sends once
+ * to get a session. `Bearer` is that session (see session-token.ts), which is
+ * how the merchant's own dashboard avoids a signature per click.
+ *
+ * DISPATCHES ON THE SCHEME. Never tries one and falls back to the other,
+ * because both read the request body and a Request body can be consumed
+ * exactly once: a "try NIP-98, and if it fails try Bearer" shape is a bug that
+ * fires the first time somebody reorders the branches.
+ *
+ * Every route takes both, including mint. Restricting the value-moving one to
+ * NIP-98 was tempting and is theatre: the same bearer can POST to
+ * /api/coupons/minters, add an attacker's own npub as an authorised issuer, and
+ * mint with their own signature. One rule, no exceptions to keep in sync.
+ */
 export async function requireAuth(
   request: Request,
   methods: string
 ): Promise<{ pubkey: string; rawBody: string } | { response: NextResponse }> {
+  const header = request.headers.get("authorization")
+
+  if (/^bearer\s/i.test(header ?? "")) {
+    return requireSession(request, header!, methods)
+  }
+
   const auth = await requireNip98(request)
   if (!auth.ok) {
     // `reason` is machine-readable help for whoever is integrating a POS —
@@ -107,6 +109,55 @@ export async function requireAuth(
     }
   }
   return { pubkey: auth.pubkey, rawBody: auth.rawBody }
+}
+
+async function requireSession(
+  request: Request,
+  header: string,
+  methods: string
+): Promise<{ pubkey: string; rawBody: string } | { response: NextResponse }> {
+  if (header.length > MAX_AUTH_HEADER_BYTES) {
+    return {
+      response: fail("La sesión no es válida.", 401, methods, { reason: "session-invalid" }),
+    }
+  }
+
+  /**
+   * The body is read before the token is checked so both schemes fail in the
+   * same order — header size, then 413 versus 401, then auth. Consistent
+   * observable behaviour between them is worth more than skipping a `text()`
+   * on a request that turns out to be unauthenticated.
+   */
+  const body = await readBoundedBody(request)
+  if (!body.ok) {
+    return { response: fail(body.error, body.status, methods, { reason: body.reason }) }
+  }
+
+  const verdict = readSessionToken(bearerFromHeader(header), nowSeconds())
+  if (!verdict.ok) {
+    /**
+     * Only `expired` is told apart, and only so a log says which happened —
+     * the client must re-mint on ANY 401 to a bearer request. With the
+     * per-process secret fallback, a restart makes every live token fail as
+     * `bad-signature`, not `expired`, so a client that branched on the reason
+     * would show an error in every open tab on every deploy.
+     *
+     * The three invalid cases collapse into one message for the same reason
+     * requireNip98 collapses its own: no honest caller can act differently on
+     * them, and splitting them tells an attacker which half to work on.
+     */
+    const expired = verdict.reason === "expired"
+    return {
+      response: fail(
+        expired ? "Tu sesión venció. Volvé a firmar." : "La sesión no es válida.",
+        401,
+        methods,
+        { reason: expired ? "session-expired" : "session-invalid" }
+      ),
+    }
+  }
+
+  return { pubkey: verdict.claims.sub, rawBody: body.rawBody }
 }
 
 /** Parse a body that requireNip98 already read and hashed. */
