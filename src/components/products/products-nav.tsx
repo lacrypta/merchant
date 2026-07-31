@@ -6,8 +6,8 @@ import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 
 const TABS = [
-  { href: "/products", label: "Catálogo" },
-  { href: "/products/events", label: "Eventos" },
+  { href: "/admin/products", label: "Catálogo" },
+  { href: "/admin/products/events", label: "Eventos" },
 ] as const
 
 export function ProductsNav() {

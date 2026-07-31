@@ -6,8 +6,8 @@ import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 
 const TABS = [
-  { href: "/settings/relays", label: "Relays" },
-  { href: "/settings/woocommerce", label: "WooCommerce" },
+  { href: "/admin/settings/relays", label: "Relays" },
+  { href: "/admin/settings/woocommerce", label: "WooCommerce" },
 ] as const
 
 export function SettingsNav() {

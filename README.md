@@ -98,7 +98,9 @@ Sin esas variables la app arranca igual y los endpoints de cupones responden `50
 
 ## Estado
 
-Funciona: login (NIP-07 · bunker · QR), catálogo con categorías y productos anidados, alta/edición/borrado, ajustes de relays NIP-65 con sugerencias, tienda pública en `/s/<npub o nip05>`, avatares nostr y verificación NIP-05.
+El sitio son dos mitades: **`/admin/*` es el panel privado** —todo detrás del login— y el resto es público (`/` y la tienda en `/s/<npub o nip05>`).
+
+Funciona: login (NIP-07 · bunker · QR), catálogo con categorías y productos anidados, alta/edición/borrado, ajustes de relays NIP-65 con sugerencias, tienda pública, avatares nostr y verificación NIP-05.
 
 Falta: subida de imágenes con recorte a Blossom (hoy se pega una URL), tests del dominio, y el endpoint de cotizaciones ARS/USD/SAT.
 
