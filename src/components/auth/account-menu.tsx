@@ -14,7 +14,7 @@ import * as React from "react"
 
 import { shortNpub, useAuth } from "@/components/auth/auth-provider"
 import { LoginDialog } from "@/components/auth/login-dialog"
-import { isDashboardPath } from "@/components/shell/nav-items"
+import { DASHBOARD_HOME, isDashboardPath } from "@/components/shell/nav-items"
 import { NostrAvatar } from "@/components/nostr/nostr-avatar"
 import { Button } from "@/components/ui/button"
 import {
@@ -56,7 +56,7 @@ export function AccountMenu() {
   React.useEffect(() => {
     if (state.status === "ready" && startedLogin.current) {
       startedLogin.current = false
-      router.push("/products")
+      router.push(DASHBOARD_HOME)
     }
   }, [state.status, router])
 

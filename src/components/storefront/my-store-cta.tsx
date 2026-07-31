@@ -6,6 +6,7 @@ import * as React from "react"
 
 import { useAuth } from "@/components/auth/auth-provider"
 import { NostrAvatar } from "@/components/nostr/nostr-avatar"
+import { DASHBOARD_HOME } from "@/components/shell/nav-items"
 import { Button } from "@/components/ui/button"
 import { useNostrProfile } from "@/hooks/use-nostr-profile"
 import { profileLabel } from "@/lib/domain/profile"
@@ -51,7 +52,7 @@ export function MyStoreCta() {
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link href="/products">
+            <Link href={DASHBOARD_HOME}>
               <LayoutDashboard className="size-4" aria-hidden />
               Mi catálogo
             </Link>

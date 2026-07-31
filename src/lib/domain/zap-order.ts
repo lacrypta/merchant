@@ -1,6 +1,7 @@
 import { decodeInvoice } from "@/lib/domain/bolt11"
 import { KINDS } from "@/lib/domain/kinds"
 import { firstTag, tagValue } from "@/lib/nostr/tags"
+import { verifySignedEventCached } from "@/lib/nostr/verify"
 import { toSats, type SatPriceTable } from "@/lib/domain/rates"
 import type { SignedEvent } from "@/lib/nostr/types"
 
@@ -107,17 +108,41 @@ export function zapRequestFromReceipt(receipt: SignedEvent): SignedEvent | null 
  * The merchant match is deliberately checked twice: first on the receipt and
  * again on the embedded request. A relay cannot make an unrelated zap look
  * like a sale by replacing only one half of the pair.
+ *
+ * Both signatures are checked too, and the two failures mean different things —
+ * see below. Without that, anyone able to write to a relay the merchant reads
+ * could publish a kind-9735 tagging them with any amount they liked and watch
+ * it land in the order list, the totals and the CSV export. The checkout side
+ * has always verified (`matchReceipt` in order.ts); this screen had not.
+ *
+ * WHAT THIS STILL DOES NOT DO: it does not pin who the payee's provider is, so
+ * a forger signing their own 9735 with their own key still passes. Closing that
+ * means resolving the merchant's lud16 to a provider pubkey and filtering on
+ * `receipt.pubkey`, the way the checkout pins `order.payee.nostrPubkey`.
  */
 export function parseZapReceiptOrder(
   receipt: SignedEvent,
   merchantPubkey: string
 ): ZapReceiptOrder | null {
+  // First, and unconditionally: an unsigned receipt is not a payment anyone can
+  // be held to, so it is not an order.
+  if (!verifySignedEventCached(receipt)) return null
+
   if (receipt.kind !== KINDS.ZAP_RECEIPT || tagValue(receipt, "p") !== merchantPubkey) {
     return null
   }
 
+  /**
+   * Asymmetric on purpose. A broken receipt drops the order; a broken embedded
+   * request only drops the ITEMS. The money arrived either way, and this
+   * screen's rule is that a merchant must never lose sight of a payment — what
+   * they lose here is the claim about what was bought.
+   */
   const candidate = zapRequestFromReceipt(receipt)
-  const zapRequest = candidate && tagValue(candidate, "p") === merchantPubkey ? candidate : null
+  const zapRequest =
+    candidate && verifySignedEventCached(candidate) && tagValue(candidate, "p") === merchantPubkey
+      ? candidate
+      : null
   const lines = (zapRequest?.tags ?? []).flatMap((tag): ZapOrderLine[] => {
     if (tag[0] !== "item" || !tag[1]) return []
     const qty = parsePositiveInteger(tag[2])

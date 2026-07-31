@@ -8,6 +8,12 @@ import { WooProvider } from "@/components/woo/woo-provider"
  * The administration area. Everything inside is behind AuthGate — the panel
  * is private and only renders once a signer is connected.
  *
+ * A real `/admin` segment rather than a `(dashboard)` group: the group gave
+ * the same layout, but "which URLs are private" was something you had to
+ * reconstruct from the folder tree. Now the prefix says it, and anything that
+ * needs to reason about the boundary — the switch-view button, a future proxy
+ * or edge check — can ask the path instead of keeping its own list.
+ *
  * The account control lives in the shared <SiteNavbar> that AppShell renders,
  * so there is nothing account-shaped to pass down here.
  *
@@ -18,7 +24,7 @@ import { WooProvider } from "@/components/woo/woo-provider"
  * WooProvider is innermost: it reads the encrypted app-data events that
  * CatalogProvider fetches, and publishes through the same queue.
  */
-export default function DashboardLayout({
+export default function AdminLayout({
   children,
 }: {
   children: React.ReactNode

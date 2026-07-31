@@ -1,8 +1,11 @@
 "use client"
 
-import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { nip19 } from "nostr-tools"
+import * as React from "react"
 
+import { clearPersistedQueries } from "@/components/providers/query-provider"
+import { clearApiSession } from "@/lib/api/session"
 import {
   isExtensionAvailable,
   loginWithBunkerUri,
@@ -76,9 +79,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<AuthState>({ status: "booting" })
   const [signer, setSigner] = React.useState<SignerPort | null>(null)
   const [extensionAvailable, setExtensionAvailable] = React.useState(false)
+  const client = useQueryClient()
+  /** Who was logged in last, to notice a switch. A ref: it must not render. */
+  const lastPubkey = React.useRef<string | null>(null)
+
+  /**
+   * Forget everything that belonged to the account being left behind.
+   *
+   * Hygiene rather than correctness, and worth saying so: every cached key
+   * already contains the pubkey it belongs to (see src/lib/query/keys.ts), so
+   * the next merchant literally cannot read the previous one's entries. What
+   * this stops is their data SITTING on a shared machine — up to seven days of
+   * zap receipts in IndexedDB — and a bearer token outliving its owner.
+   *
+   * `clear()` and not a list of keys to remove: a list is something the next
+   * person to add a pubkey-scoped query will forget to extend, which is the
+   * exact failure the key factory exists to prevent. It also empties the
+   * mutation cache, which removeQueries does not.
+   */
+  const resetAccountData = React.useCallback(() => {
+    clearApiSession()
+    client.clear()
+    void clearPersistedQueries()
+  }, [client])
 
   const apply = React.useCallback(
     (pubkey: string, s: SignerPort, method: SignerMethod) => {
+      // Switching accounts without logging out is routine — an extension can do
+      // it, and the login dialog is reachable while already signed in. On boot
+      // the ref is null, so a restored session keeps its cache, which is the
+      // whole point of persisting it.
+      if (lastPubkey.current && lastPubkey.current !== pubkey) resetAccountData()
+      lastPubkey.current = pubkey
+
       setSigner(s)
       setState({
         status: "ready",
@@ -87,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         method,
       })
     },
-    []
+    [resetAccountData]
   )
 
   // Extensions inject window.nostr AFTER hydration, so poll briefly.
@@ -131,6 +164,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const r = await loginWithExtension()
         if (cancelled) return
         if (r.pubkey !== saved.pubkey) {
+          // The bearer goes with it: we just decided this session is not who it
+          // claimed to be, and leaving its token on disk contradicts that.
+          // Harmless in practice — readStored checks the pubkey too — but a
+          // credential should never outlive the session that earned it.
+          clearApiSession()
           clearSession()
           setState({ status: "anonymous" })
           return
@@ -138,6 +176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         apply(r.pubkey, r.signer, "nip07")
       } catch {
         if (cancelled) return
+        clearApiSession()
         clearSession()
         setState({ status: "anonymous" })
       }
@@ -217,10 +256,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 
   const logout = React.useCallback(() => {
+    // The credential goes first: if anything below throws, the worst state left
+    // behind is a warm cache with no way to authenticate against it.
+    resetAccountData()
+    lastPubkey.current = null
     clearSession()
     setSigner(null)
     setState({ status: "anonymous" })
-  }, [])
+  }, [resetAccountData])
 
   const value = React.useMemo<AuthContextValue>(
     () => ({

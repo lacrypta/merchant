@@ -25,6 +25,25 @@ const CACHE_BUSTER = "v1"
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60_000
 
+export const QUERY_CACHE_KEY = `mm:query:${CACHE_BUSTER}`
+
+/**
+ * Wipe the persisted cache, now, without waiting for the persister.
+ *
+ * `queryClient.clear()` does notify it, but writes are throttled by a second —
+ * so a tab closed inside that window leaves everything on disk, including up to
+ * seven days of the previous merchant's zap receipts. Logging out on a shared
+ * machine is exactly when that second matters.
+ */
+export async function clearPersistedQueries(): Promise<void> {
+  try {
+    await del(QUERY_CACHE_KEY)
+  } catch {
+    // IndexedDB can be unavailable (private mode, or a browser that refuses it
+    // in an iframe). Nothing was persisted in that case either.
+  }
+}
+
 function makeClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
@@ -52,7 +71,7 @@ const persister = createAsyncStoragePersister({
     setItem: (key, value) => set(key, value),
     removeItem: (key) => del(key),
   },
-  key: `mm:query:${CACHE_BUSTER}`,
+  key: QUERY_CACHE_KEY,
   throttleTime: 1000,
 })
 

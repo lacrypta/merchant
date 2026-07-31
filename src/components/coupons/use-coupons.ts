@@ -4,9 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
 
 import { useAuth } from "@/components/auth/auth-provider"
+import { ApiError, asApiError } from "@/lib/api/error"
+import { apiFetch } from "@/lib/api/fetch"
 import type { Benefit } from "@/lib/domain/coupon"
-import { createNip98Token } from "@/lib/nostr/nip98"
-import type { SignedEvent, SignerPort } from "@/lib/nostr/types"
+import type { SignedEvent } from "@/lib/nostr/types"
 import { CACHE, qk } from "@/lib/query/keys"
 
 /**
@@ -18,10 +19,11 @@ import { CACHE, qk } from "@/lib/query/keys"
  * fetch plus an invalidation is the honest model, and pretending otherwise would
  * show a "pendiente" badge that never resolves.
  *
- * What that costs is one NIP-98 signature per request, and on a NIP-46 bunker a
- * signature is a round trip to the merchant's phone. Hence: one GET that returns
- * coupons AND minters together, and mutations that invalidate rather than
- * refetching optimistically.
+ * Requests carry the session bearer (src/lib/api/session.ts), so the merchant
+ * signs once per tab rather than once per call — on a NIP-46 bunker a signature
+ * is a round trip to their phone. The batching that predates the session is
+ * still worth keeping for the round trips alone: one GET returns coupons AND
+ * minters, and mutations invalidate rather than refetch optimistically.
  */
 
 export interface CouponJson {
@@ -81,90 +83,11 @@ export interface CouponInput {
 
 export type CouponPatch = Partial<CouponInput> & { archived?: boolean }
 
-/** Thrown with the server's own Spanish message, so callers can render it. */
-export class CouponApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly reason?: string
-  ) {
-    super(message)
-    this.name = "CouponApiError"
-  }
-}
-
 /**
- * Every query failure, in a shape the screens can render.
- *
- * `instanceof CouponApiError` alone dropped the ones that never reached the
- * server — a refused bunker prompt, an offline phone, a DNS hiccup — and the
- * screen answered a failed load with an empty list and no explanation. A
- * coupon page that silently shows zero coupons is indistinguishable from a
- * merchant who has none.
+ * Re-exported under the old name: two exported interfaces here type their
+ * `error` field with it, and the class itself is no longer coupon-specific.
  */
-function asApiError(error: unknown): CouponApiError | null {
-  if (!error) return null
-  if (error instanceof CouponApiError) return error
-  // Status 0, borrowed from XHR: it means "the request never got an answer".
-  return new CouponApiError(
-    error instanceof Error && error.message
-      ? error.message
-      : "No pudimos contactar al servidor.",
-    0
-  )
-}
-
-/**
- * Signed fetch. The URL must be absolute, because that is what gets signed and
- * what the server compares against — a relative path would produce a token
- * bound to nothing.
- */
-async function nip98Fetch<T>(
-  signer: SignerPort,
-  path: string,
-  init: { method?: string; body?: unknown } = {}
-): Promise<T> {
-  const method = init.method ?? "GET"
-  const url = new URL(path, window.location.origin).toString()
-  const body = init.body === undefined ? undefined : JSON.stringify(init.body)
-
-  let authorization: string
-  try {
-    authorization = await createNip98Token(signer, url, method, body)
-  } catch (e) {
-    // A bunker that refuses kind 27235 lands here. Sessions connected before
-    // this kind was added to SIGNING_KINDS have to reconnect once.
-    throw new CouponApiError(
-      e instanceof Error && /denied|reject/i.test(e.message)
-        ? "Tu firmante rechazó la autorización. Si usás un bunker, volvé a conectarlo."
-        : "No pudimos firmar la autorización. Probá de nuevo.",
-      0
-    )
-  }
-
-  const res = await fetch(url, {
-    method,
-    body,
-    cache: "no-store",
-    headers: {
-      authorization,
-      ...(body ? { "content-type": "application/json" } : {}),
-    },
-  })
-
-  const data = (await res.json().catch(() => null)) as
-    | (T & { error?: string; reason?: string })
-    | null
-
-  if (!res.ok) {
-    throw new CouponApiError(
-      data?.error ?? "Algo salió mal. Probá de nuevo.",
-      res.status,
-      data?.reason
-    )
-  }
-  return data as T
-}
+export { ApiError as CouponApiError }
 
 export interface CouponsResult {
   coupons: CouponJson[]
@@ -174,7 +97,7 @@ export interface CouponsResult {
   loading: boolean
   refreshing: boolean
   /** The server's message when the last read failed — 503 when unconfigured. */
-  error: CouponApiError | null
+  error: ApiError | null
   refresh: () => void
   create: (input: CouponInput) => Promise<CouponJson>
   update: (id: string, patch: CouponPatch) => Promise<CouponJson>
@@ -199,11 +122,11 @@ export function useCoupons(): CouponsResult {
     ...CACHE.coupons,
     // One request, one signature: the page needs both lists to render.
     queryFn: () =>
-      nip98Fetch<{
+      apiFetch<{
         coupons: CouponJson[]
         minters: MinterJson[]
         discovery: SignedEvent | null
-      }>(signer!, "/api/coupons"),
+      }>(signer!, pubkey!, "/api/coupons"),
     // A 503 (no database) or a refused signature will not fix itself on retry.
     retry: false,
   })
@@ -214,7 +137,7 @@ export function useCoupons(): CouponsResult {
 
   const createMutation = useMutation({
     mutationFn: (input: CouponInput) =>
-      nip98Fetch<{ coupon: CouponJson }>(signer!, "/api/coupons", {
+      apiFetch<{ coupon: CouponJson }>(signer!, pubkey!, "/api/coupons", {
         method: "POST",
         body: input,
       }),
@@ -223,7 +146,7 @@ export function useCoupons(): CouponsResult {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: CouponPatch }) =>
-      nip98Fetch<{ coupon: CouponJson }>(signer!, `/api/coupons/${id}`, {
+      apiFetch<{ coupon: CouponJson }>(signer!, pubkey!, `/api/coupons/${id}`, {
         method: "PATCH",
         body: patch,
       }),
@@ -232,7 +155,7 @@ export function useCoupons(): CouponsResult {
 
   const removeMutation = useMutation({
     mutationFn: (id: string) =>
-      nip98Fetch<{ deleted: boolean; archived: boolean }>(signer!, `/api/coupons/${id}`, {
+      apiFetch<{ deleted: boolean; archived: boolean }>(signer!, pubkey!, `/api/coupons/${id}`, {
         method: "DELETE",
       }),
     onSuccess: invalidate,
@@ -240,7 +163,7 @@ export function useCoupons(): CouponsResult {
 
   const mintMutation = useMutation({
     mutationFn: (couponId: string) =>
-      nip98Fetch<MintedCoupon>(signer!, "/api/coupons/mint", {
+      apiFetch<MintedCoupon>(signer!, pubkey!, "/api/coupons/mint", {
         method: "POST",
         body: { couponId },
       }),
@@ -250,7 +173,7 @@ export function useCoupons(): CouponsResult {
 
   const addMinterMutation = useMutation({
     mutationFn: ({ pubkey: minter, label }: { pubkey: string; label: string }) =>
-      nip98Fetch<{ minter: MinterJson }>(signer!, "/api/coupons/minters", {
+      apiFetch<{ minter: MinterJson }>(signer!, pubkey!, "/api/coupons/minters", {
         method: "POST",
         body: { pubkey: minter, label },
       }),
@@ -259,7 +182,7 @@ export function useCoupons(): CouponsResult {
 
   const saveDiscoveryMutation = useMutation({
     mutationFn: (event: SignedEvent) =>
-      nip98Fetch<{ event: SignedEvent }>(signer!, "/api/coupons/discovery", {
+      apiFetch<{ event: SignedEvent }>(signer!, pubkey!, "/api/coupons/discovery", {
         method: "PUT",
         body: { event },
       }),
@@ -268,8 +191,9 @@ export function useCoupons(): CouponsResult {
 
   const removeMinterMutation = useMutation({
     mutationFn: (minter: string) =>
-      nip98Fetch<{ removed: boolean }>(
+      apiFetch<{ removed: boolean }>(
         signer!,
+        pubkey!,
         `/api/coupons/minters/${encodeURIComponent(minter)}`,
         { method: "DELETE" }
       ),
@@ -310,7 +234,7 @@ export function useCoupons(): CouponsResult {
 export function useCouponMints(couponId: string | null): {
   mints: MintJson[]
   loading: boolean
-  error: CouponApiError | null
+  error: ApiError | null
   voidMint: (nonce: string) => Promise<void>
 } {
   const { state, signer } = useAuth()
@@ -323,13 +247,14 @@ export function useCouponMints(couponId: string | null): {
     ...CACHE.coupons,
     retry: false,
     queryFn: () =>
-      nip98Fetch<{ mints: MintJson[] }>(signer!, `/api/coupons/${couponId}/mints`),
+      apiFetch<{ mints: MintJson[] }>(signer!, pubkey!, `/api/coupons/${couponId}/mints`),
   })
 
   const voidMutation = useMutation({
     mutationFn: (nonce: string) =>
-      nip98Fetch<{ mint: MintJson }>(
+      apiFetch<{ mint: MintJson }>(
         signer!,
+        pubkey!,
         `/api/coupons/${couponId}/mints/${encodeURIComponent(nonce)}`,
         { method: "DELETE" }
       ),

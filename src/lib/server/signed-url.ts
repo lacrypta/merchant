@@ -4,6 +4,8 @@ import { hmac } from "@noble/hashes/hmac.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js"
 
+import { timingSafeEqual } from "@/lib/server/timing-safe"
+
 /**
  * Opaque, signed, short-lived handles for outbound URLs.
  *
@@ -103,11 +105,4 @@ export function readToken(
   }
 
   return { ok: true, payload }
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
 }

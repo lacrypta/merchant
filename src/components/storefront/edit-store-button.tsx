@@ -4,6 +4,7 @@ import { Pencil } from "lucide-react"
 import Link from "next/link"
 
 import { useAuth } from "@/components/auth/auth-provider"
+import { DASHBOARD_HOME } from "@/components/shell/nav-items"
 import { Button } from "@/components/ui/button"
 
 /**
@@ -24,7 +25,7 @@ export function EditStoreButton({ merchantPubkey }: { merchantPubkey: string }) 
 
   return (
     <Button variant="outline" size="sm" className="enter-pop" asChild>
-      <Link href="/products">
+      <Link href={DASHBOARD_HOME}>
         <Pencil className="size-4" aria-hidden />
         Editar tienda
       </Link>
