@@ -40,10 +40,11 @@ export const SIGNING_KINDS = [
   10002, // NIP-65 relay list
   10063, // BUD-03 blossom servers
   24242, // BUD-11 blossom auth
+  27235, // NIP-98 HTTP auth (the coupon API)
   30402, // product
   30403, // product draft
   30405, // category
-  30078, // NIP-78 app data (WooCommerce config, encrypted)
+  30078, // NIP-78 app data (WooCommerce config encrypted; coupon endpoints not)
 ]
 
 /**

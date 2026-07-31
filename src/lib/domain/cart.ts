@@ -1,3 +1,4 @@
+import { isValidNonce, parseBenefit, type AppliedCoupon } from "@/lib/domain/coupon"
 import type { Product, Visibility } from "@/lib/domain/product"
 import { quote, type Quote, type SatPriceTable } from "@/lib/domain/rates"
 
@@ -49,6 +50,18 @@ export interface Cart {
   v: 1
   lines: CartLine[]
   updatedAt: number
+  /**
+   * A coupon the shopper applied. Undefined is the normal case.
+   *
+   * Lives in the cart rather than in checkout-local state because the discount
+   * has to be visible while they are still shopping — a 2x1 that only appears
+   * after they hit "Pagar" is a coupon they never knew to use. It also survives
+   * the reload that a QR scan on a phone routinely causes.
+   *
+   * Note this does NOT bump the cart version: the field is additive, and a cart
+   * stored by an older build parses fine without it.
+   */
+  coupon?: AppliedCoupon
 }
 
 export const CART_VERSION = 1 as const
@@ -157,6 +170,17 @@ export function setQty(cart: Cart, d: string, qty: number, now: number): Cart {
 export function removeLine(cart: Cart, d: string, now: number): Cart {
   if (!lineFor(cart, d)) return cart
   return { ...cart, updatedAt: now, lines: cart.lines.filter((l) => l.d !== d) }
+}
+
+export function applyCoupon(cart: Cart, coupon: AppliedCoupon, now: number): Cart {
+  return { ...cart, updatedAt: now, coupon }
+}
+
+export function removeCoupon(cart: Cart, now: number): Cart {
+  if (!cart.coupon) return cart
+  // Rebuilt rather than spread-and-delete so `coupon` is genuinely absent, not
+  // present-and-undefined — JSON.stringify keeps the difference.
+  return { v: cart.v, lines: cart.lines, updatedAt: now }
 }
 
 export type LineIssue =
@@ -286,9 +310,40 @@ export function parseCart(raw: string | null, now: number): Cart | null {
     const lines = c.lines.filter(isCartLine)
     if (lines.length !== c.lines.length) return null
 
-    return { v: CART_VERSION, lines, updatedAt: c.updatedAt }
+    // A bad coupon drops the COUPON, not the cart: the lines are still exactly
+    // what the shopper chose, and throwing them away to punish a malformed
+    // discount would be the more expensive mistake. The server re-checks the
+    // nonce before anything is charged anyway.
+    const coupon = parseAppliedCoupon(c.coupon)
+
+    return {
+      v: CART_VERSION,
+      lines,
+      updatedAt: c.updatedAt,
+      ...(coupon ? { coupon } : {}),
+    }
   } catch {
     return null
+  }
+}
+
+function parseAppliedCoupon(value: unknown): AppliedCoupon | null {
+  if (typeof value !== "object" || value === null) return null
+  const c = value as Partial<AppliedCoupon>
+  if (!isValidNonce(c.nonce)) return null
+  if (typeof c.couponId !== "string" || !c.couponId) return null
+  if (typeof c.name !== "string") return null
+
+  const benefit = parseBenefit(c.benefit)
+  if (!benefit.ok) return null
+
+  return {
+    nonce: c.nonce,
+    couponId: c.couponId,
+    name: c.name,
+    benefit: benefit.value,
+    ...(typeof c.image === "string" ? { image: c.image } : {}),
+    ...(typeof c.claimedAt === "number" ? { claimedAt: c.claimedAt } : {}),
   }
 }
 

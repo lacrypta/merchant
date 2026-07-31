@@ -32,10 +32,13 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Category } from "@/lib/domain/category"
-import type { Product } from "@/lib/domain/product"
+import { isPubliclyVisible, type Product, type Visibility } from "@/lib/domain/product"
 import { fold } from "@/lib/domain/slug"
+
+type StatusFilter = "todos" | "activos" | "ocultos"
 
 export function ProductsScreen() {
   const { state } = useAuth()
@@ -54,6 +57,7 @@ export function ProductsScreen() {
   const { connection: wooConnection } = useWoo()
 
   const [query, setQuery] = React.useState("")
+  const [filter, setFilter] = React.useState<StatusFilter>("todos")
   const [editingCategory, setEditingCategory] = React.useState<Category | null>(
     null
   )
@@ -77,10 +81,14 @@ export function ProductsScreen() {
   const visible = React.useMemo(() => {
     const q = fold(query)
     return products.filter((p) => {
+      // "Activos" is what a customer can actually see in the shop, which is
+      // the same test the storefront applies — not a separate idea of active.
+      if (filter === "activos" && !isPubliclyVisible(p)) return false
+      if (filter === "ocultos" && isPubliclyVisible(p)) return false
       if (!q) return true
       return fold(p.title).includes(q) || fold(p.summary ?? "").includes(q)
     })
-  }, [products, query])
+  }, [products, filter, query])
 
   /**
    * `t` is authoritative for MEMBERSHIP; the category's `a` list only supplies
@@ -164,6 +172,17 @@ export function ProductsScreen() {
       ...p,
       categories: toSlug ? [toSlug, ...foreign] : foreign,
     })
+  }
+
+  /**
+   * Hide a product from the storefront, or put it back.
+   *
+   * Not a delete: the product keeps its `d`, its place in the category and its
+   * history — it simply stops being publicly visible (`isPubliclyVisible`).
+   * That is what a merchant wants for something out of season.
+   */
+  function handleToggleVisibility(p: Product, next: Visibility) {
+    saveProduct({ ...p, visibility: next })
   }
 
   function handleReorderCategories(orderedDs: string[]) {
@@ -255,14 +274,47 @@ export function ProductsScreen() {
               aria-label="Buscar productos"
               className="h-11 max-w-xs rounded-full"
             />
+            <SegmentedControl
+              aria-label="Filtrar por estado"
+              value={filter}
+              onValueChange={(v) => setFilter(v as StatusFilter)}
+              options={[
+                { value: "todos", label: "Todos" },
+                { value: "activos", label: "Activos" },
+                { value: "ocultos", label: "Ocultos" },
+              ]}
+            />
           </div>
 
-          {visible.length === 0 && query ? (
+          {visible.length === 0 && (query || filter !== "todos") ? (
+            /**
+             * The filter narrows too, and on its own it used to leave the board
+             * rendering nothing but category headers — a merchant with no hidden
+             * products clicked "Ocultos" and got a blank page that looked broken.
+             * Whatever is doing the narrowing is what the button clears.
+             */
             <EmptyState
-              title={`Sin resultados para «${query}»`}
+              title={
+                query
+                  ? `Sin resultados para «${query}»`
+                  : filter === "activos"
+                    ? "No tenés productos activos"
+                    : "No tenés productos ocultos"
+              }
+              description={
+                query && filter !== "todos"
+                  ? "Puede que el filtro de estado esté dejando afuera lo que buscás."
+                  : undefined
+              }
               action={
-                <Button variant="ghost" onClick={() => setQuery("")}>
-                  Limpiar búsqueda
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setQuery("")
+                    setFilter("todos")
+                  }}
+                >
+                  {query ? "Limpiar búsqueda" : "Ver todos"}
                 </Button>
               }
             />
@@ -281,6 +333,8 @@ export function ProductsScreen() {
               onDeleteCategory={setCategoryToDelete}
               onDeleteProduct={setProductToDelete}
               onMoveProduct={handleMoveProduct}
+              onToggleProductVisibility={handleToggleVisibility}
+              onEditProductPrice={saveProduct}
               onReorderCategories={handleReorderCategories}
               onReorderProducts={handleReorderProducts}
             />

@@ -82,6 +82,8 @@ describe("allocateOrderLineSats", () => {
       lines,
       itemsCount: lines.reduce((sum, line) => sum + line.qty, 0),
       totals: [],
+      coupon: null,
+      discounts: [],
       receiptSats,
     }
   }
@@ -125,5 +127,69 @@ describe("allocateOrderLineSats", () => {
       quality: "unavailable",
       lines: [{ sats: null }, { sats: null }],
     })
+  })
+})
+
+describe("coupon projection", () => {
+  const request = (tags: string[][]) =>
+    event({ kind: KINDS.ZAP_REQUEST, tags: [["p", MERCHANT], ...tags] })
+
+  // No bolt11 tag: these cases are about reading the REQUEST's tags, and
+  // receiptSats being null does not affect any of them.
+  const receiptFor = (tags: string[][]) =>
+    event({
+      tags: [
+        ["p", MERCHANT],
+        ["description", JSON.stringify(request(tags))],
+      ],
+    })
+
+  it("reads the coupon and its per-currency discount off the request", () => {
+    const parsed = parseZapReceiptOrder(
+      receiptFor([
+        ["total", "1000", "ARS"],
+        ["coupon", "33333333-3333-4333-8333-333333333333", "percent", "Promo verano"],
+        ["discount", "100", "ARS"],
+      ]),
+      MERCHANT
+    )
+    expect(parsed?.coupon).toEqual({
+      id: "33333333-3333-4333-8333-333333333333",
+      type: "percent",
+      name: "Promo verano",
+    })
+    expect(parsed?.discounts).toEqual([{ amount: 100, currency: "ARS" }])
+    // Totals stay gross, so the merchant can see gross − discount = charged.
+    expect(parsed?.totals).toEqual([{ amount: 1000, currency: "ARS" }])
+  })
+
+  it("reports no coupon on an ordinary order", () => {
+    const parsed = parseZapReceiptOrder(receiptFor([["total", "1000", "ARS"]]), MERCHANT)
+    expect(parsed?.coupon).toBeNull()
+    expect(parsed?.discounts).toEqual([])
+  })
+
+  it("tolerates a coupon tag without a name", () => {
+    const parsed = parseZapReceiptOrder(
+      receiptFor([["coupon", "an-id", "percent"]]),
+      MERCHANT
+    )
+    expect(parsed?.coupon).toEqual({ id: "an-id", type: "percent", name: "" })
+  })
+
+  it("ignores a coupon tag missing its type", () => {
+    expect(parseZapReceiptOrder(receiptFor([["coupon", "an-id"]]), MERCHANT)?.coupon).toBeNull()
+  })
+
+  it("drops a discount tag with no currency or an unparseable amount", () => {
+    const parsed = parseZapReceiptOrder(
+      receiptFor([
+        ["discount", "100"],
+        ["discount", "nope", "ARS"],
+        ["discount", "50", "usd"],
+      ]),
+      MERCHANT
+    )
+    expect(parsed?.discounts).toEqual([{ amount: 50, currency: "USD" }])
   })
 })

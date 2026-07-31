@@ -72,8 +72,16 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
           // Persist only what SUCCEEDED. Writing an error state to disk means
           // a failed relay read on Tuesday is still being replayed as the
           // truth on Thursday.
+          //
+          // Coupons are excluded outright. Everything else here is public data
+          // from relays, where a week-old copy is still a true copy; coupons
+          // come from our own database behind a NIP-98 signature, and a
+          // restored "8 sin usar" would be a stale claim about money written to
+          // the disk of whatever machine the merchant happened to log in on.
           shouldDehydrateQuery: (q) =>
-            q.state.status === "success" && q.state.data !== undefined,
+            q.state.status === "success" &&
+            q.state.data !== undefined &&
+            q.queryKey[0] !== "coupons",
         },
       }}
     >

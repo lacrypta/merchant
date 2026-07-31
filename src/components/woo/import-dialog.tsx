@@ -147,7 +147,7 @@ export function ImportDialog({
       toast.error("No se importó ningún producto.")
     } else {
       toast.success(
-        `${imported.length} ${imported.length === 1 ? "producto" : "productos"} en el borrador. Revisá y guardá los cambios.`,
+        `${imported.length} ${imported.length === 1 ? "producto" : "productos"} sin guardar. Revisá y guardá los cambios.`,
         {
           description:
             skuWriteFailures.length > 0

@@ -1,6 +1,7 @@
 import { AppSidebar } from "@/components/shell/app-sidebar"
 import { LiveRegions } from "@/components/shell/live-regions"
 import { MobileTabBar } from "@/components/shell/mobile-tab-bar"
+import { SiteFooter } from "@/components/shell/site-footer"
 import { SiteNavbar } from "@/components/shell/site-navbar"
 
 /**
@@ -46,6 +47,9 @@ export function AppShell({
           {children}
         </main>
       </div>
+
+      {/* `pb-20` on mobile clears the tab bar fixed over the end of the page. */}
+      <SiteFooter className="pb-20 lg:pb-0" />
 
       <MobileTabBar />
       <LiveRegions />

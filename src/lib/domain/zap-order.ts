@@ -17,6 +17,13 @@ export interface ZapOrderTotal {
   currency: string
 }
 
+/** The coupon the buyer applied, as named by the request's `coupon` tag. */
+export interface ZapOrderCoupon {
+  id: string
+  type: string
+  name: string
+}
+
 /**
  * A payment receipt paired with the request embedded in its `description`
  * tag. The receipt is kept even when its request is missing or malformed: a
@@ -28,7 +35,15 @@ export interface ZapReceiptOrder {
   zapRequest: SignedEvent | null
   lines: ZapOrderLine[]
   itemsCount: number | null
+  /** GROSS, before any discount — see buildZapRequestTemplate. */
   totals: ZapOrderTotal[]
+  /** Null when no coupon was used, which is the common case. */
+  coupon: ZapOrderCoupon | null
+  /**
+   * What the coupon took off, per currency. `totals` minus this is what the
+   * invoice actually charged.
+   */
+  discounts: ZapOrderTotal[]
   /** Exact amount carried by the receipt's BOLT-11 invoice. */
   receiptSats: number | null
 }
@@ -116,19 +131,27 @@ export function parseZapReceiptOrder(
       },
     ]
   })
-  const totals = (zapRequest?.tags ?? []).flatMap((tag): ZapOrderTotal[] => {
-    if (tag[0] !== "total" || !tag[2]) return []
-    const amount = parseAmount(tag[1])
-    if (amount === undefined) return []
-    return [{ amount, currency: tag[2].trim().toUpperCase() }]
-  })
+  const amountTags = (name: string): ZapOrderTotal[] =>
+    (zapRequest?.tags ?? []).flatMap((tag): ZapOrderTotal[] => {
+      if (tag[0] !== name || !tag[2]) return []
+      const amount = parseAmount(tag[1])
+      if (amount === undefined) return []
+      return [{ amount, currency: tag[2].trim().toUpperCase() }]
+    })
+
+  const couponTag = zapRequest ? firstTag(zapRequest, "coupon") : undefined
 
   return {
     receipt,
     zapRequest,
     lines,
     itemsCount: zapRequest ? parsePositiveInteger(firstTag(zapRequest, "items_count")?.[1]) : null,
-    totals,
+    totals: amountTags("total"),
+    coupon:
+      couponTag?.[1] && couponTag[2]
+        ? { id: couponTag[1], type: couponTag[2], name: couponTag[3] ?? "" }
+        : null,
+    discounts: amountTags("discount"),
     receiptSats: receiptSats(receipt),
   }
 }

@@ -207,6 +207,9 @@ async function readCatalog(
   const events = await queryEvents(
     [
       {
+        // 30403 is still read even though nothing writes drafts any more: the
+        // sweep below is the only thing that can find a leftover from before
+        // the feature was removed, and without this kind it never sees one.
         kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
         authors: [pubkey],
       },
@@ -657,7 +660,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     for (const [d, kind] of diff.products) {
       if (kind !== "deleted") continue
       const p = before.products.find((x) => x.d === d)!
-      const eventKind = KINDS.PRODUCT
       const t = nowSeconds()
 
       // ORDER MATTERS. NIP-09 deletes every version up to AND INCLUDING the
@@ -670,8 +672,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           created_at: t,
           content: "Producto eliminado",
           tags: [
-            ["a", coordinate(eventKind, pubkey, p.d)],
-            ["k", String(eventKind)],
+            ["a", coordinate(KINDS.PRODUCT, pubkey, p.d)],
+            ["k", String(KINDS.PRODUCT)],
           ],
         },
         `Borrar ${p.title}`,

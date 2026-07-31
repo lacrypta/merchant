@@ -3,7 +3,6 @@
 import {
   BadgeCheck,
   Copy,
-  LayoutDashboard,
   LogIn,
   LogOut,
   Store,
@@ -15,6 +14,7 @@ import * as React from "react"
 
 import { shortNpub, useAuth } from "@/components/auth/auth-provider"
 import { LoginDialog } from "@/components/auth/login-dialog"
+import { isDashboardPath } from "@/components/shell/nav-items"
 import { NostrAvatar } from "@/components/nostr/nostr-avatar"
 import { Button } from "@/components/ui/button"
 import {
@@ -91,9 +91,6 @@ export function AccountMenu() {
   // to this pubkey. A claimed-but-unverified nip05 shows without a check.
   const verified = nip05State === "verified"
   const secondary = verified ? profile!.nip05! : shortNpub(state.npub)
-  const insideDashboard =
-    pathname.startsWith("/products") || pathname.startsWith("/settings")
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -176,22 +173,16 @@ export function AccountMenu() {
           {copied ? "Copiado" : "Copiar npub"}
         </DropdownMenuItem>
 
-        {/* Only offer the dashboard link from outside it. */}
-        {!insideDashboard ? (
+        {/* Only from outside the panel: inside it, the navbar already carries
+            this exact link and two of them is one too many. */}
+        {!isDashboardPath(pathname) ? (
           <DropdownMenuItem asChild>
-            <Link href="/products">
-              <LayoutDashboard className="size-4" aria-hidden />
-              Ir al panel
+            <Link href={`/s/${state.npub}`}>
+              <Store className="size-4" aria-hidden />
+              Ver mi tienda
             </Link>
           </DropdownMenuItem>
         ) : null}
-
-        <DropdownMenuItem asChild>
-          <Link href={`/s/${state.npub}`}>
-            <Store className="size-4" aria-hidden />
-            Ver mi tienda
-          </Link>
-        </DropdownMenuItem>
 
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={logout} className="text-danger">

@@ -1,31 +1,27 @@
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
-import { AlertTriangle } from "lucide-react"
+import { Suspense } from "react"
 import { nip19 } from "nostr-tools"
 
 import { GridBackdrop } from "@/components/brand/grid-backdrop"
-import { EmptyState } from "@/components/feedback/empty-state"
-import { AddToCartControl } from "@/components/cart/add-to-cart-control"
-import { EditStoreButton } from "@/components/storefront/edit-store-button"
 import { CartAside } from "@/components/cart/cart-aside"
+import { EditStoreButton } from "@/components/storefront/edit-store-button"
 import { HandleSearchForm } from "@/components/storefront/handle-search-form"
-import { ProductRow } from "@/components/storefront/product-row"
 import {
-  StorefrontSearch,
-  type SearchEntry,
-} from "@/components/storefront/storefront-search"
+  CatalogSection,
+  ProductCountChip,
+} from "@/components/storefront/catalog-section"
+import { CatalogSkeleton } from "@/components/storefront/catalog-skeleton"
+import { CouponChip } from "@/components/storefront/coupon-availability"
+import { Skeleton } from "@/components/ui/skeleton"
 import { TickerChip } from "@/components/ui/ticker-chip"
-import { toCartItem } from "@/lib/domain/cart"
-import { getStorefront } from "@/lib/server/storefront"
+import { getMerchantIdentity } from "@/lib/server/storefront"
 
 /** Relay reads need Node (WebSocket), and the data is public — cache it. */
 export const runtime = "nodejs"
 export const revalidate = 60
 
 type Params = Promise<{ handle: string }>
-
-/** Filtering one product is not filtering. Everything above that gets a box. */
-const SEARCH_MIN_PRODUCTS = 2
 
 export async function generateMetadata({
   params,
@@ -34,211 +30,129 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { handle } = await params
   const decoded = decodeURIComponent(handle)
-  const data = await getStorefront(decoded)
+  const data = await getMerchantIdentity(decoded)
   if (!data) return { title: "Tienda no encontrada" }
-  const { store } = data
-  const name = firstNonBlank(
-    store.profile?.displayName,
-    store.profile?.name,
-    decoded
-  )
+
+  const name = firstNonBlank(data.profile?.displayName, data.profile?.name, decoded)
 
   return {
     title: name,
-    description: store.profile?.about ?? `Catálogo de ${name} en nostr.`,
+    description: data.profile?.about ?? `Catálogo de ${name} en nostr.`,
     openGraph: {
       title: name,
-      description: store.profile?.about ?? `Catálogo de ${name} en nostr.`,
-      images: store.profile?.picture ? [store.profile.picture] : undefined,
+      description: data.profile?.about ?? `Catálogo de ${name} en nostr.`,
+      images: data.profile?.picture ? [data.profile.picture] : undefined,
     },
   }
 }
 
+/**
+ * The storefront, assembled from three independent relay reads.
+ *
+ * Only the merchant is awaited here — one kind-0 with `limit: 1`, the fast one.
+ * The catalog and the coupon announcement each stream into their own Suspense
+ * boundary, so the visitor gets the shop's name and avatar in a few hundred
+ * milliseconds and watches the rest arrive, instead of staring at a full-page
+ * skeleton until the slowest relay has finished.
+ *
+ * The reads run CONCURRENTLY: rendering reaches all three boundaries before any
+ * of them resolves, which is the whole reason to split them.
+ */
 export default async function StorefrontPage({ params }: { params: Params }) {
   const { handle } = await params
   const decoded = decodeURIComponent(handle)
 
-  const data = await getStorefront(decoded)
+  const data = await getMerchantIdentity(decoded)
   if (!data) notFound()
-  const { resolved, store } = data
+  const { resolved, profile } = data
+  const { pubkey, relayHints } = resolved
 
-  // Decided ONCE for the whole catalog, not per row: a per-product decision
-  // leaves a ragged left edge wherever one item has a photo and the next does
-  // not. A merchant who uploaded nothing gets a clean text menu instead of a
-  // column of placeholders.
-  const showImage = store.groups.some((g) =>
-    g.products.some((p) => p.images.length > 0)
-  )
   // Some profiles carry a blank or whitespace-only display_name; treat those
   // as absent rather than rendering an empty heading.
-  const displayName = firstNonBlank(
-    store.profile?.displayName,
-    store.profile?.name,
-    toNpub(resolved.pubkey)
-  )
-
-  /**
-   * One short string per product for the search box — NOT the products.
-   *
-   * Built here so the row itself stays a Server Component: what crosses the
-   * wire is a name, a summary and a SKU, never the markdown description.
-   */
-  const searchEntries: SearchEntry[] = store.groups.flatMap((g) => {
-    const cat = g.category?.d ?? "__uncategorised"
-    const catName = g.category?.name ?? ""
-    return g.products.map((p) => ({
-      d: p.d,
-      cat,
-      text: [p.title, p.summary ?? "", p.sku ?? "", catName].join(" "),
-    }))
-  })
+  const displayName = firstNonBlank(profile?.displayName, profile?.name, toNpub(pubkey))
 
   return (
-    <>
-      <main id="main" className="flex-1">
-        <header className="relative border-b border-border">
-          <GridBackdrop />
-          <div className="mx-auto flex w-full max-w-6xl items-center gap-4 px-4 py-6 md:px-8 md:py-8">
-            {store.profile?.picture ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={store.profile.picture}
-                alt=""
-                className="size-14 shrink-0 rounded-full object-cover ring-2 ring-border md:size-16"
-              />
-            ) : (
-              <div
-                aria-hidden
-                className="grid size-14 shrink-0 place-items-center rounded-full bg-secondary text-xl font-bold md:size-16"
-              >
-                {displayName.slice(0, 1).toUpperCase()}
-              </div>
-            )}
+    <main id="main" className="flex-1">
+      <header className="relative border-b border-border">
+        <GridBackdrop />
+        <div className="mx-auto flex w-full max-w-6xl items-center gap-4 px-4 py-6 md:px-8 md:py-8">
+          {profile?.picture ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={profile.picture}
+              alt=""
+              className="enter-pop size-14 shrink-0 rounded-full object-cover ring-2 ring-border md:size-16"
+            />
+          ) : (
+            <div
+              aria-hidden
+              className="enter-pop grid size-14 shrink-0 place-items-center rounded-full bg-secondary text-xl font-bold md:size-16"
+            >
+              {displayName.slice(0, 1).toUpperCase()}
+            </div>
+          )}
 
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <h1 className="text-h1 break-words">{displayName}</h1>
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <h1 className="text-h1 enter-pop break-words">{displayName}</h1>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {/* NIP-05 is identification, not verification — only show it
-                    when the round trip actually resolved to this pubkey. */}
-                {resolved.via === "nip05" && resolved.nip05 ? (
-                  <TickerChip tone="success">{resolved.nip05}</TickerChip>
-                ) : null}
-                <TickerChip className="truncate-middle max-w-[16rem]">
-                  {toNpub(resolved.pubkey)}
-                </TickerChip>
-                <EditStoreButton merchantPubkey={resolved.pubkey} />
-                {store.productCount > 0 ? (
-                  <TickerChip>
-                    <b className="font-semibold text-primary">
-                      {store.productCount}
-                    </b>
-                    {store.productCount === 1 ? "producto" : "productos"}
-                  </TickerChip>
-                ) : null}
-              </div>
-
-              {store.profile?.about ? (
-                <p className="line-clamp-2 max-w-prose text-sm text-muted-foreground">
-                  {store.profile.about}
-                </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* NIP-05 is identification, not verification — only show it
+                  when the round trip actually resolved to this pubkey. */}
+              {resolved.via === "nip05" && resolved.nip05 ? (
+                <TickerChip tone="success">{resolved.nip05}</TickerChip>
               ) : null}
-            </div>
-          </div>
-        </header>
+              <TickerChip className="truncate-middle max-w-[16rem]">
+                {toNpub(pubkey)}
+              </TickerChip>
+              <EditStoreButton merchantPubkey={pubkey} />
 
-        <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
-          <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
-            <div className="min-w-0 flex-1">
-              {store.relaysUnreachable ? (
-                <div
-                  role="alert"
-                  className="mb-8 flex items-start gap-3 rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-sm text-warning"
-                >
-                  <AlertTriangle
-                    className="mt-0.5 size-4 shrink-0"
-                    aria-hidden
-                  />
-                  <span>
-                    No pudimos alcanzar los relays. Puede que el catálogo esté
-                    incompleto — probá recargar en unos segundos.
-                  </span>
-                </div>
-              ) : null}
-
-              {store.groups.length === 0 ? (
-                <EmptyState
-                  title="Esta tienda todavía no publicó productos"
-                  description={`${displayName} no tiene productos activos en los relays que consultamos.`}
-                />
-              ) : (
-                <>
-                  {/* Hidden only for a one-product store, where there is
-                      nothing to filter down to. */}
-                  {searchEntries.length >= SEARCH_MIN_PRODUCTS ? (
-                    <StorefrontSearch entries={searchEntries} />
-                  ) : null}
-
-                  <div className="space-y-8">
-                    {store.groups.map((group) => {
-                      const key = group.category?.d ?? "__uncategorised"
-                      const name = group.category?.name ?? "Sin categoría"
-                      return (
-                        <section key={key} data-group={key}>
-                          <h2
-                            id={group.category?.slug ?? "sin-categoria"}
-                            className="text-h3 mb-3 scroll-mt-20"
-                          >
-                            {group.category?.emoji ? (
-                              <span aria-hidden className="mr-2">
-                                {group.category.emoji}
-                              </span>
-                            ) : null}
-                            {name}
-                            <span
-                              data-group-count=""
-                              className="numeric ml-2 align-middle text-base font-medium text-muted-foreground"
-                            >
-                              {group.products.length}
-                            </span>
-                          </h2>
-
-                          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-                            {group.products.map((p) => (
-                              <li key={p.d} data-product={p.d}>
-                                <ProductRow
-                                  product={p}
-                                  showImage={showImage}
-                                  action={
-                                    <AddToCartControl item={toCartItem(p)} />
-                                  }
-                                />
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      )
-                    })}
-                  </div>
-                </>
-              )}
+              {/* Two chips that depend on slower reads. Each holds its place
+                  with a pulse, so the row does not reflow when they land. */}
+              <Suspense fallback={<ChipSkeleton width="6.5rem" />}>
+                <ProductCountChip pubkey={pubkey} relayHints={relayHints} />
+              </Suspense>
+              <Suspense fallback={<ChipSkeleton width="8rem" />}>
+                <CouponChip pubkey={pubkey} relayHints={relayHints} />
+              </Suspense>
             </div>
 
-            <CartAside />
-          </div>
-
-          <div className="mt-16 border-t border-border pt-8">
-            <p className="mb-3 text-sm text-muted-foreground">
-              Buscar otra tienda
-            </p>
-            <div className="max-w-[560px]">
-              <HandleSearchForm />
-            </div>
+            {profile?.about ? (
+              <p className="line-clamp-2 max-w-prose text-sm text-muted-foreground">
+                {profile.about}
+              </p>
+            ) : null}
           </div>
         </div>
-      </main>
-    </>
+      </header>
+
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1">
+            <Suspense fallback={<CatalogSkeleton />}>
+              <CatalogSection
+                pubkey={pubkey}
+                relayHints={relayHints}
+                displayName={displayName}
+              />
+            </Suspense>
+          </div>
+
+          <CartAside />
+        </div>
+
+        <div className="mt-16 border-t border-border pt-8">
+          <p className="mb-3 text-sm text-muted-foreground">Buscar otra tienda</p>
+          <div className="max-w-[560px]">
+            <HandleSearchForm />
+          </div>
+        </div>
+      </div>
+    </main>
   )
+}
+
+function ChipSkeleton({ width }: { width: string }) {
+  return <Skeleton className="h-7 rounded-full" style={{ width }} />
 }
 
 function toNpub(pubkey: string): string {

@@ -186,7 +186,11 @@ export function ProductForm({
       className="grid gap-8 md:grid-cols-[minmax(0,1fr)_auto]"
       noValidate
     >
-      <div className="sticky top-0 z-20 col-span-full -mx-4 flex min-h-16 items-center justify-end border-b border-border bg-popover/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-popover/85">
+      {/* Opaque, not translucent. A blurred 85% bar works over a page — that
+          is the navbar — but over a form it lets the field you are scrolling
+          past read straight through the button, which looks like the content
+          is passing over the bar rather than under it. */}
+      <div className="sticky top-0 z-20 col-span-full -mx-4 flex min-h-16 items-center justify-end border-b border-border bg-popover px-4 py-2">
         <Button type="submit" disabled={saving || uploadingImage}>
           {saving ? (
             <>

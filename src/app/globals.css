@@ -369,6 +369,22 @@
   }
 }
 
+/* A bar that says "working", not "this far along".
+   For waits whose length we genuinely cannot know — a relay fan-out, a wallet
+   round trip. Faking a percentage there is a lie the user can feel. */
+@utility bar-indeterminate {
+  animation: bar-indeterminate 1.4s var(--ease-brand) infinite;
+}
+
+@keyframes bar-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 /* One-shot attention pull for a value that just changed on its own. */
 @utility flash-primary {
   animation: flash-primary 700ms var(--ease-brand);

@@ -347,6 +347,32 @@ function OrderDetailDialog({
                 />
               </section>
 
+              {/* Without this the numbers do not add up: the item totals are
+                  GROSS, and what the invoice charged is gross minus this. */}
+              {view.order.coupon ? (
+                <section
+                  aria-label="Cupón aplicado"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surface-2 px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">
+                      Cupón {view.order.coupon.name || view.order.coupon.type}
+                    </p>
+                    <p className="truncate-middle numeric text-xs text-muted-foreground">
+                      {view.order.coupon.id}
+                    </p>
+                  </div>
+                  {view.order.discounts.length > 0 ? (
+                    <p className="numeric text-sm font-bold text-success">
+                      −
+                      {view.order.discounts
+                        .map((d) => formatPrice(d.amount, d.currency))
+                        .join(" − ")}
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
+
               <section aria-labelledby="order-items-title">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 id="order-items-title" className="text-h3">

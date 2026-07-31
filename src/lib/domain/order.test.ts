@@ -601,3 +601,86 @@ describe("reconcilePayee", () => {
     expect(reconcilePayee(legacy, fresh())).toBeNull()
   })
 })
+
+describe("coupon tags on the zap request", () => {
+  const applied = {
+    nonce: "hcLPDzERvvHzS4Vn0OLbAQ",
+    couponId: "33333333-3333-4333-8333-333333333333",
+    name: "Promo verano",
+    benefit: { type: "percent", percent: 10 } as const,
+  }
+
+  const withCoupon = (over: Partial<BuildOrderInput> = {}) =>
+    fitZapRequest(
+      input({
+        coupon: { applied, discount: [{ currency: "ARS", amount: 2190 }] },
+        ...over,
+      })
+    ).template
+
+  it("names the coupon and what it took off", () => {
+    const tags = withCoupon().tags
+    expect(tags).toContainEqual(["coupon", applied.couponId, "percent", "Promo verano"])
+    expect(tags).toContainEqual(["discount", "2190", "ARS"])
+  })
+
+  it("keeps the `total` tags GROSS so gross − discount = what was charged", () => {
+    const l = [{ d: lines(1)[0]!.d, qty: 1, title: "x", unitAmount: 1000, currency: "ARS" }]
+    const tags = withCoupon({
+      lines: l,
+      coupon: { applied, discount: [{ currency: "ARS", amount: 100 }] },
+    }).tags
+    expect(tags).toContainEqual(["total", "1000", "ARS"])
+    expect(tags).toContainEqual(["discount", "100", "ARS"])
+  })
+
+  it("emits one discount tag per currency", () => {
+    const tags = withCoupon({
+      lines: [
+        { d: lines(1)[0]!.d, qty: 1, title: "a", unitAmount: 100, currency: "ARS" },
+        { d: lines(2)[1]!.d, qty: 1, title: "b", unitAmount: 2, currency: "USD" },
+      ],
+      coupon: {
+        applied,
+        discount: [
+          { currency: "ARS", amount: 10 },
+          { currency: "USD", amount: 0.2 },
+        ],
+      },
+    }).tags
+    expect(tags.filter((t) => t[0] === "discount")).toEqual([
+      ["discount", "10", "ARS"],
+      ["discount", "0.2", "USD"],
+    ])
+  })
+
+  it("emits nothing when there is no coupon", () => {
+    const tags = fitZapRequest(input()).template.tags
+    expect(tags.some((t) => t[0] === "coupon" || t[0] === "discount")).toBe(false)
+  })
+
+  it("survives the size ladder — a discount must never be dropped", () => {
+    // 40 lines forces the richest item encoding out; the order-level coupon
+    // tags are tiny and have to ride along regardless.
+    const fitted = fitZapRequest(
+      input({
+        lines: lines(40),
+        coupon: { applied, discount: [{ currency: "ARS", amount: 5000 }] },
+      })
+    )
+    expect(fitted.fidelity).toBeGreaterThan(1)
+    expect(fitted.template.tags).toContainEqual([
+      "coupon",
+      applied.couponId,
+      "percent",
+      "Promo verano",
+    ])
+    expect(fitted.template.tags).toContainEqual(["discount", "5000", "ARS"])
+  })
+
+  it("changes the order id, because the coupon is part of what was signed", () => {
+    const plain = signZapRequest(fitZapRequest(input()).template)
+    const discounted = signZapRequest(withCoupon())
+    expect(discounted.id).not.toBe(plain.id)
+  })
+})

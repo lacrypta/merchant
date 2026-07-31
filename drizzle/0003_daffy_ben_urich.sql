@@ -1,0 +1,1 @@
+ALTER TABLE "coupon_definitions" DROP COLUMN "product_d";

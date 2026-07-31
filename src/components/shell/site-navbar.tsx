@@ -4,6 +4,7 @@ import { AccountMenu } from "@/components/auth/account-menu"
 import { Logo } from "@/components/brand/logo"
 import { SyncBadge } from "@/components/feedback/sync-badge"
 import { RelayLogButton } from "@/components/nostr/relay-log-button"
+import { SwitchViewButton } from "@/components/shell/switch-view-button"
 
 /**
  * THE navbar. One component for every page — landing, public storefront and
@@ -34,6 +35,7 @@ export function SiteNavbar({ extra }: { extra?: React.ReactNode }) {
         <div className="ml-auto flex items-center gap-2">
           {extra}
           <RelayLogButton />
+          <SwitchViewButton />
           <AccountMenu />
         </div>
       </div>

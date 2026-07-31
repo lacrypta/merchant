@@ -1,13 +1,15 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js"
-import { finalizeEvent, generateSecretKey, verifyEvent } from "nostr-tools/pure"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 
 import { decodeInvoice } from "@/lib/domain/bolt11"
 import type { CartLine } from "@/lib/domain/cart"
+import type { AppliedCoupon, DiscountEntry } from "@/lib/domain/coupon"
 import { KINDS } from "@/lib/domain/kinds"
 import { formatAmount } from "@/lib/domain/price"
 import { nowSeconds } from "@/lib/nostr/created-at"
 import { tagValue } from "@/lib/nostr/tags"
+import { verifySignedEvent } from "@/lib/nostr/verify"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
 /**
@@ -171,6 +173,14 @@ export interface Order {
   anomalies: OrderAnomaly[]
   buyerNote?: string
   paidAt?: number
+  /**
+   * The coupon this order was placed with, if any.
+   *
+   * `coupon.claimedAt` being set is what stops a re-invoice from redeeming the
+   * nonce twice: the first invoice consumes it, every later quote for the same
+   * order reuses that redemption. Additive, so ORDER_VERSION does not move.
+   */
+  coupon?: AppliedCoupon
 }
 
 export const ORDER_VERSION = 1 as const
@@ -247,6 +257,8 @@ export interface BuildOrderInput {
   comment: string | null
   buyerNote?: string
   createdAt: number
+  /** Applied coupon and what it took off, per currency. */
+  coupon?: { applied: AppliedCoupon; discount: readonly DiscountEntry[] }
 }
 
 type ItemTagger = ((l: OrderLine) => string[]) | null
@@ -310,8 +322,27 @@ export function buildZapRequestTemplate(
     ["items_count", String(input.lines.reduce((n, l) => n + l.qty, 0))],
   ]
 
+  // GROSS totals, before any discount. The merchant's order book then reads as
+  // "these items, less this coupon, equals what the invoice charged" — which is
+  // what a receipt says, and it means the item tags keep matching the catalog
+  // prices rather than carrying a silently marked-down number.
   for (const [currency, amount] of totalsByCurrency(input.lines)) {
     tags.push(["total", formatAmount({ amount, currency }), currency])
+  }
+
+  // Order-level and tiny, so these ride along at EVERY rung of the size ladder
+  // below: a discount the merchant cannot see is worse than an item they have
+  // to look up.
+  if (input.coupon) {
+    tags.push([
+      "coupon",
+      input.coupon.applied.couponId,
+      input.coupon.applied.benefit.type,
+      input.coupon.applied.name,
+    ])
+    for (const d of input.coupon.discount) {
+      tags.push(["discount", formatAmount({ amount: d.amount, currency: d.currency }), d.currency])
+    }
   }
 
   if (itemTag) for (const l of input.lines) tags.push(itemTag(l))
@@ -571,30 +602,12 @@ export type ReceiptMatch =
 const no = (reason: string): ReceiptMatch => ({ ok: false, reason })
 
 /**
- * Verify a signature without trusting nostr-tools' memo.
- *
- * `finalizeEvent` stamps the event with a non-enumerable-looking but
- * SPREADABLE `verifiedSymbol`, and `verifyEvent` short-circuits on it. Any
- * code that does `{...event, tags: [...]}` therefore carries a stale "already
- * verified" flag onto a mutated object, and the check silently passes.
- *
- * Events arriving from a relay are JSON-parsed and cannot carry a symbol, so
- * this is belt-and-braces — but the failure mode is "we accept a forged
- * payment receipt", which is not a place to rely on a caller's discipline.
- * Rebuilding the seven canonical fields drops the memo and anything else
- * riding along.
+ * Re-exported so the receipt matcher below reads in one place, and so existing
+ * importers keep working. It lives in src/lib/nostr/verify.ts because NIP-98
+ * request authentication needs the same guarantee and must not import the
+ * entire order module to get it.
  */
-export function verifySignedEvent(e: SignedEvent): boolean {
-  return verifyEvent({
-    id: e.id,
-    pubkey: e.pubkey,
-    created_at: e.created_at,
-    kind: e.kind,
-    tags: e.tags,
-    content: e.content,
-    sig: e.sig,
-  } as never)
-}
+export { verifySignedEvent }
 
 /**
  * Is this kind-9735 the receipt for THIS order?
