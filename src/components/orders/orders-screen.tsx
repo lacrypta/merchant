@@ -39,7 +39,6 @@ import {
   ResponsiveDialogHeader,
   ResponsiveDialogTitle,
 } from "@/components/ui/responsive-dialog"
-import { Skeleton } from "@/components/ui/skeleton"
 import { useRates } from "@/hooks/use-rates"
 import { KINDS } from "@/lib/domain/kinds"
 import { formatPrice } from "@/lib/domain/price"
@@ -54,6 +53,7 @@ import {
 import { queryEvents } from "@/lib/nostr/backend"
 import { verifySignedEventCached } from "@/lib/nostr/verify"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
+import type { SignedEvent } from "@/lib/nostr/types"
 import { CACHE, qk } from "@/lib/query/keys"
 import { serializeCsv } from "@/lib/csv"
 import { fold } from "@/lib/domain/slug"
@@ -244,6 +244,42 @@ function MetricCard({
       </p>
       <p className="mt-1 text-xs text-muted-foreground">{note}</p>
     </div>
+  )
+}
+
+/**
+ * What sits where the table will be, while the relays are still answering.
+ *
+ * Says which relays and how many have replied rather than spinning anonymously:
+ * this read fans out to every configured read relay and finishes when the
+ * slowest one does, so "4 de 6" is the difference between "it is working" and
+ * "it is stuck". The order count climbs alongside it — the same number the
+ * cards above are already showing.
+ */
+function RelayFetchPanel({
+  progress,
+  found,
+}: {
+  progress: { settled: number; total: number } | null
+  found: number
+}) {
+  return (
+    <section
+      aria-live="polite"
+      aria-busy="true"
+      className="mt-6 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border-strong px-6 py-16 text-center"
+    >
+      <RefreshCw className="size-5 text-primary motion-safe:animate-spin" aria-hidden />
+      <p className="text-sm font-medium">
+        Buscando órdenes en los relays
+        {progress ? ` · ${progress.settled} de ${progress.total}` : "…"}
+      </p>
+      <p className="text-sm text-muted-foreground">
+        {found > 0
+          ? `${numberFormatter.format(found)} ${found === 1 ? "orden encontrada" : "órdenes encontradas"} hasta ahora.`
+          : "Los totales de arriba se van completando a medida que cada relay responde."}
+      </p>
+    </section>
   )
 }
 
@@ -505,23 +541,65 @@ export function OrdersScreen() {
   )
   const relaysKey = relays.join(",")
 
+  /**
+   * What the relays have handed over SO FAR in a read that is still running.
+   *
+   * The screen used to be all-or-nothing: four skeletons until the slowest
+   * relay answered or hit the eight-second ceiling, then everything at once.
+   * With this, each relay's events land as they arrive and the totals climb
+   * toward the real figure instead of jumping to it.
+   *
+   * Only ever consulted while `receiptsQuery.data` is undefined — see
+   * `receipts` below. A background refetch keeps showing the settled list
+   * rather than shrinking it back to whichever relay answered first.
+   */
+  const [partial, setPartial] = React.useState<SignedEvent[]>([])
+  const [relayProgress, setRelayProgress] = React.useState<{
+    settled: number
+    total: number
+  } | null>(null)
+
   const receiptsQuery = useQuery({
     queryKey: [...qk.orders(pubkey ?? ""), relaysKey],
     queryFn: async () => {
+      // setState from inside the query function, not an effect: this runs in
+      // an async callback, so it is neither a render-phase write nor the
+      // synchronous effect-body setState the lint rule bans.
+      setPartial([])
+      setRelayProgress(null)
+
+      const seen = new Map<string, SignedEvent>()
       const events = await queryEvents(
         [{ kinds: [KINDS.ZAP_RECEIPT], "#p": [pubkey!] }],
         relays,
-        { label: "Órdenes cobradas" }
+        {
+          label: "Órdenes cobradas",
+          onBatch: (batch, settled, total) => {
+            // Batches are per-relay and undeduplicated; key by id, and verify
+            // here so the signature checks are spread across the wait rather
+            // than landing in one commit at the end.
+            for (const e of batch) verifySignedEventCached(e)
+            for (const e of batch) seen.set(e.id, e)
+            setPartial([...seen.values()])
+            setRelayProgress({ settled, total })
+          },
+        }
       )
-      // Warm the verify memo here, inside the await that already shows a
-      // skeleton. Left to the parse below it would run two secp256k1 checks per
-      // order during a commit — seconds of frozen tab for a busy merchant.
       for (const e of events) verifySignedEventCached(e)
       return events
     },
     enabled: !!pubkey,
     ...CACHE.orders,
   })
+
+  /**
+   * The settled read wins the moment it exists; until then, whatever has
+   * arrived. Both are already verified, so nothing downstream can tell them
+   * apart — the only difference is that one is still growing.
+   */
+  const receipts = receiptsQuery.data ?? partial
+  /** Still waiting on the first read: no settled data and none cached. */
+  const loading = receiptsQuery.isPending
 
   const productTitles = React.useMemo(
     () => new Map(products.map((product) => [product.d, product.title])),
@@ -530,7 +608,7 @@ export function OrdersScreen() {
 
   const orderViews = React.useMemo<OrderView[]>(
     () =>
-      (receiptsQuery.data ?? [])
+      receipts
         .map((receipt) => parseZapReceiptOrder(receipt, pubkey ?? ""))
         .filter((order): order is ZapReceiptOrder => order !== null)
         .map((order) => {
@@ -553,7 +631,7 @@ export function OrdersScreen() {
             currencies: [...new Set(totals.map((total) => total.currency))],
           }
         }),
-    [receiptsQuery.data, pubkey, rates?.satPrice]
+    [receipts, pubkey, rates?.satPrice]
   )
 
   const currencies = React.useMemo(
@@ -871,24 +949,6 @@ export function OrdersScreen() {
     </div>
   )
 
-  if (receiptsQuery.isPending) {
-    return (
-      <>
-        <PageHeader
-          title="Órdenes"
-          description="Pagos confirmados por zap receipt."
-          action={action}
-        />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-busy="true">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <Skeleton key={index} className="h-28 rounded-2xl" />
-          ))}
-        </div>
-        <Skeleton className="mt-6 h-96 w-full rounded-2xl" />
-      </>
-    )
-  }
-
   return (
     <>
       <PageHeader
@@ -908,8 +968,44 @@ export function OrdersScreen() {
         </p>
       ) : null}
 
-      {orderViews.length === 0 ? (
+      {/*
+        The cards render from the first frame, at zero, and climb as each relay
+        answers. Four skeletons would have been the same wait dressed as
+        progress; these are the real figures, just not final yet.
+      */}
+      <section
+        aria-label="Resumen de órdenes"
+        aria-busy={loading}
+        className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      >
+        <MetricCard
+          label="Cobrado"
+          value={formatSats(metrics.sats)}
+          note={`${filteredOrders.length} órdenes visibles`}
+          primary
+        />
+        <MetricCard
+          label="Unidades"
+          value={numberFormatter.format(metrics.items)}
+          note={`${reportRows.length} productos distintos`}
+        />
+        <MetricCard
+          label="Ticket promedio"
+          value={formatSats(metrics.average)}
+          note="Sobre receipts con BOLT-11 legible"
+        />
+        <MetricCard
+          label="Cobertura por ítem"
+          value={`${metrics.exact + metrics.estimated}/${filteredOrders.length}`}
+          note={`${metrics.estimated} estimadas · ${metrics.unavailable} sin asignar`}
+        />
+      </section>
+
+      {loading ? (
+        <RelayFetchPanel progress={relayProgress} found={orderViews.length} />
+      ) : orderViews.length === 0 ? (
         <EmptyState
+          className="mt-6"
           title="Todavía no hay órdenes cobradas"
           description="Cuando el proveedor publique un zap receipt para tu comercio, el pedido va a aparecer acá con sus ítems y cantidades."
           action={
@@ -924,32 +1020,7 @@ export function OrdersScreen() {
         />
       ) : (
         <>
-          <section
-            aria-label="Resumen de órdenes"
-            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-          >
-            <MetricCard
-              label="Cobrado"
-              value={formatSats(metrics.sats)}
-              note={`${filteredOrders.length} órdenes visibles`}
-              primary
-            />
-            <MetricCard
-              label="Unidades"
-              value={numberFormatter.format(metrics.items)}
-              note={`${reportRows.length} productos distintos`}
-            />
-            <MetricCard
-              label="Ticket promedio"
-              value={formatSats(metrics.average)}
-              note="Sobre receipts con BOLT-11 legible"
-            />
-            <MetricCard
-              label="Cobertura por ítem"
-              value={`${metrics.exact + metrics.estimated}/${filteredOrders.length}`}
-              note={`${metrics.estimated} estimadas · ${metrics.unavailable} sin asignar`}
-            />
-          </section>
+
 
           <section aria-label="Filtros de órdenes" className="mt-6">
             <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-3 xl:flex-row xl:items-end">

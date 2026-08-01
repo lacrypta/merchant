@@ -192,13 +192,33 @@ export function publishEventStreaming(
 export async function queryEvents(
   filters: Filter[],
   relays: string[],
-  opts: { timeoutMs?: number; settleMs?: number; label?: string } = {}
+  opts: {
+    timeoutMs?: number
+    settleMs?: number
+    label?: string
+    /**
+     * Called as each relay settles, with just that relay's events.
+     *
+     * The awaited return value still needs every relay, so without this a
+     * caller waits for the SLOWEST — up to the eight-second ceiling — before
+     * it can paint anything, even though the fast relays answered in a few
+     * hundred milliseconds. Screens that can show partial results (the orders
+     * book fills its totals as they arrive) take this instead.
+     *
+     * Batches are raw and per-relay: no cross-relay de-duplication has
+     * happened yet, so the same event arrives once per relay that carries it.
+     * Whoever accumulates has to key by id, exactly as the tail of this
+     * function does.
+     */
+    onBatch?: (events: SignedEvent[], settled: number, total: number) => void
+  } = {}
 ): Promise<SignedEvent[]> {
   if (relays.length === 0 || filters.length === 0) return []
   const pool = ensureNostrGlobals()
   const label = opts.label ?? "Consulta"
   // One place to honour the relay toggles, so every caller gets it for free.
   const active = enabledRelays(relays)
+  let settled = 0
 
   const results = await Promise.all(
     active.map(async (url) => {
@@ -234,6 +254,15 @@ export async function queryEvents(
         status: perRelay.length > 0 ? "ok" : "empty",
         origin: "client",
       })
+
+      // After the log, so a subscriber that throws cannot cost us the entry.
+      settled += 1
+      try {
+        opts.onBatch?.(perRelay, settled, active.length)
+      } catch {
+        // A rendering callback is not this function's problem to report; the
+        // awaited result is unaffected either way.
+      }
 
       return perRelay
     })
