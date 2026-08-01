@@ -618,9 +618,17 @@ describe("coupon tags on the zap request", () => {
       })
     ).template
 
-  it("names the coupon and what it took off", () => {
+  it("names the coupon, the code redeemed, and what it took off", () => {
     const tags = withCoupon().tags
-    expect(tags).toContainEqual(["coupon", applied.couponId, "percent", "Promo verano"])
+    // The nonce is what ties the order back to ONE issued coupon; without it
+    // the merchant only knows which definition was used.
+    expect(tags).toContainEqual([
+      "coupon",
+      applied.couponId,
+      "percent",
+      "Promo verano",
+      applied.nonce,
+    ])
     expect(tags).toContainEqual(["discount", "2190", "ARS"])
   })
 
@@ -674,8 +682,21 @@ describe("coupon tags on the zap request", () => {
       applied.couponId,
       "percent",
       "Promo verano",
+      applied.nonce,
     ])
     expect(fitted.template.tags).toContainEqual(["discount", "5000", "ARS"])
+  })
+
+  it("carries the code even when the coupon has no name", () => {
+    const tags = withCoupon({
+      coupon: {
+        applied: { ...applied, name: "" },
+        discount: [{ currency: "ARS", amount: 1 }],
+      },
+    }).tags
+    // The empty name must not collapse the array and shift the nonce into its
+    // slot — positional readers would then show the code as the name.
+    expect(tags).toContainEqual(["coupon", applied.couponId, "percent", "", applied.nonce])
   })
 
   it("changes the order id, because the coupon is part of what was signed", () => {

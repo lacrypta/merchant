@@ -290,7 +290,13 @@ El checkout no necesita el anuncio: llama a sus propios endpoints.
 2. **`GET claim`** valida sin consumir. Se chequea que el cupón sea **de esta tienda** — un despliegue sirve a muchos comercios y el endpoint responde por cualquier nonce que conozca; sin ese chequeo alguien podría llevar un 50% de un local a otro.
 3. El descuento se muestra en el total. Todavía no se consumió nada.
 4. Al tocar "Generar factura", **`POST claim`** lo consume *antes* de pedir la factura. Si otro lo usó en el medio, se avisa y se saca del carrito.
-5. El cupón queda en la orden como tags del zap request: `["coupon", id, tipo, nombre]` y un `["discount", monto, moneda]` por moneda. Los tags `total` siguen siendo **brutos**: bruto − descuento = pagado.
+5. El cupón queda en la orden como tags del zap request: `["coupon", id, tipo, nombre, nonce]` y un `["discount", monto, moneda]` por moneda. Los tags `total` siguen siendo **brutos**: bruto − descuento = pagado.
+
+El `nonce` es el código que se canjeó, y es lo que hace que una orden se pueda cruzar contra **una emisión puntual** y no sólo contra la definición. Aparece en el detalle de la orden y en el CSV.
+
+Va en un evento público a propósito: el canje ocurre en el paso 4, *antes* de firmar el zap request, así que cuando un relay lo transporta ya está gastado y `POST claim` sólo mueve `minted → claimed`. Lo que sí queda expuesto es que ese código existió: quien lo lea puede preguntarle al endpoint de canje y obtener el nombre y el beneficio del cupón. Metadata de algo que ya nadie puede usar.
+
+El nonce va **al final** del tag. Los lectores indexan por posición, así que meterlo antes correría `tipo` y `nombre` y etiquetaría mal cada orden ya publicada. Órdenes anteriores a este cambio no lo tienen y se muestran igual, sólo sin código.
 
 Si el comprador canjea y después abandona sin pagar, el cupón se quemó. Es un trade-off aceptado: canjear antes de facturar es mejor que facturar un descuento que después no se puede cobrar. El comerciante emite otro.
 
@@ -306,6 +312,7 @@ Una vez **pagada** la orden, se borra del `localStorage`. El recibo sigue en pan
 - **Archivar frena la emisión, no el canje.** Los que ya se entregaron eran una promesa del comercio. Para cortarlos, fecha de vencimiento pasada.
 - **Anular conserva la fila.** Borrarla haría que una caja lea "no existe" en lugar de "fue anulado".
 - **Los tags `total` del pedido van BRUTOS**, con el descuento aparte en `["coupon", …]` y `["discount", …]`. Así el libro de órdenes se lee como un ticket: ítems, menos cupón, igual lo cobrado.
+- **El nonce viaja en el tag `coupon` y es público.** Ya está gastado cuando se publica (ver §5.2), y sin él conciliar una orden contra la lista de emitidos es a mano.
 - **El descuento escala cada subtotal por el mismo factor** en lugar de restarse de una moneda. En un carrito de una sola moneda es resta exacta; en uno mixto es lo único que deja el desglose en pesos sumando al total en sats.
 
 ---

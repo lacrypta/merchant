@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/feedback/empty-state"
 import { PageHeader } from "@/components/shell/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { CopyButton } from "@/components/ui/copy-button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -395,6 +396,21 @@ function OrderDetailDialog({
                     <p className="truncate text-sm font-semibold">
                       Cupón {view.order.coupon.name || view.order.coupon.type}
                     </p>
+                    {/* The redeemed code first: it is what the merchant looks
+                        up in the coupon's mint list. The definition id below
+                        only says which coupon, not which issued one. */}
+                    {view.order.coupon.nonce ? (
+                      <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <span className="numeric truncate">
+                          Código {view.order.coupon.nonce}
+                        </span>
+                        <CopyButton
+                          value={view.order.coupon.nonce}
+                          label="Copiar el código del cupón"
+                          className="size-5"
+                        />
+                      </p>
+                    ) : null}
                     <p className="truncate-middle numeric text-xs text-muted-foreground">
                       {view.order.coupon.id}
                     </p>
@@ -839,6 +855,11 @@ export function OrdersScreen() {
         "Total (sats)",
         "Monedas originales",
         "Calidad de asignación",
+        // Reconciling a coupon campaign happens in a spreadsheet more often
+        // than on screen: the code is the join key against the mint list.
+        "Cupón",
+        "Código del cupón",
+        "Descuento",
       ],
       filteredOrders.map((view) => [
         new Date(view.order.receipt.created_at * 1000).toISOString(),
@@ -856,6 +877,9 @@ export function OrdersScreen() {
         view.order.receiptSats,
         exportTotals(view.totals),
         allocationLabel(view.quality),
+        view.order.coupon?.name || view.order.coupon?.type || "",
+        view.order.coupon?.nonce ?? "",
+        exportTotals(view.order.discounts),
       ])
     )
     downloadCsv(`ordenes-${localFileDate()}.csv`, csv)

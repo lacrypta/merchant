@@ -1,7 +1,8 @@
-import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import { describe, expect, it } from "vitest"
 
 import { KINDS } from "@/lib/domain/kinds"
+import { fitZapRequest, toOrderLines } from "@/lib/domain/order"
 import {
   allocateOrderLineSats,
   parseZapReceiptOrder,
@@ -222,6 +223,7 @@ describe("coupon projection", () => {
       id: "33333333-3333-4333-8333-333333333333",
       type: "percent",
       name: "Promo verano",
+      nonce: null,
     })
     expect(parsed?.discounts).toEqual([{ amount: 100, currency: "ARS" }])
     // Totals stay gross, so the merchant can see gross − discount = charged.
@@ -239,11 +241,87 @@ describe("coupon projection", () => {
       receiptFor([["coupon", "an-id", "percent"]]),
       MERCHANT
     )
-    expect(parsed?.coupon).toEqual({ id: "an-id", type: "percent", name: "" })
+    expect(parsed?.coupon).toEqual({
+      id: "an-id",
+      type: "percent",
+      name: "",
+      nonce: null,
+    })
+  })
+
+  it("reads the redeemed code when the order carries one", () => {
+    const parsed = parseZapReceiptOrder(
+      receiptFor([
+        ["coupon", "an-id", "percent", "Promo verano", "hcLPDzERvvHzS4Vn0OLbAQ"],
+      ]),
+      MERCHANT
+    )
+    expect(parsed?.coupon).toEqual({
+      id: "an-id",
+      type: "percent",
+      name: "Promo verano",
+      nonce: "hcLPDzERvvHzS4Vn0OLbAQ",
+    })
+  })
+
+  it("reads the code even when the coupon had no name", () => {
+    // The empty slot has to stay occupied, or the code lands where the name
+    // is read and the order book shows a nonce as the coupon's title.
+    const parsed = parseZapReceiptOrder(
+      receiptFor([["coupon", "an-id", "percent", "", "hcLPDzERvvHzS4Vn0OLbAQ"]]),
+      MERCHANT
+    )
+    expect(parsed?.coupon).toMatchObject({ name: "", nonce: "hcLPDzERvvHzS4Vn0OLbAQ" })
   })
 
   it("ignores a coupon tag missing its type", () => {
     expect(parseZapReceiptOrder(receiptFor([["coupon", "an-id"]]), MERCHANT)?.coupon).toBeNull()
+  })
+
+  /**
+   * The one test that spans both halves. order.ts writes the tag by position
+   * and this file reads it by position; each side can be internally consistent
+   * and still disagree, and the symptom would be a nonce displayed as the
+   * coupon's name in the order book.
+   */
+  it("lleva el código del checkout al libro de órdenes, de punta a punta", () => {
+    const merchantSk = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSk)
+    const applied = {
+      nonce: "hcLPDzERvvHzS4Vn0OLbAQ",
+      couponId: "33333333-3333-4333-8333-333333333333",
+      name: "Promo verano",
+      benefit: { type: "percent", percent: 10 } as const,
+    }
+
+    const { template } = fitZapRequest({
+      merchantPubkey,
+      lines: toOrderLines([
+        { d: "cafe", qty: 2, title: "Café", unitAmount: 1500, currency: "ARS" },
+      ]),
+      relays: ["wss://relay.example"],
+      callbackUrlForSizing: "x".repeat(64),
+      amountMsat: 2_700_000,
+      comment: null,
+      createdAt: 1_800_000_000,
+      coupon: { applied, discount: [{ currency: "ARS", amount: 300 }] },
+    })
+    const zapRequest = finalizeEvent(template, generateSecretKey()) as SignedEvent
+    const receipt = event({
+      tags: [
+        ["p", merchantPubkey],
+        ["description", JSON.stringify(zapRequest)],
+      ],
+    })
+
+    const parsed = parseZapReceiptOrder(receipt, merchantPubkey)
+    expect(parsed?.coupon).toEqual({
+      id: applied.couponId,
+      type: "percent",
+      name: "Promo verano",
+      nonce: applied.nonce,
+    })
+    expect(parsed?.discounts).toEqual([{ amount: 300, currency: "ARS" }])
   })
 
   it("drops a discount tag with no currency or an unparseable amount", () => {

@@ -334,11 +334,27 @@ export function buildZapRequestTemplate(
   // below: a discount the merchant cannot see is worse than an item they have
   // to look up.
   if (input.coupon) {
+    /**
+     * The nonce rides last, so the code that was actually redeemed is on the
+     * order. Without it the merchant sees WHICH COUPON was used but not WHICH
+     * ISSUED ONE, and reconciling a payment against the mint list is manual.
+     *
+     * It goes in a public event, and that is fine on purpose: the claim
+     * happens before this template is built (see createInvoice), so by the
+     * time a relay carries the code it is already spent and `claimByNonce`
+     * only moves minted → claimed. What a relay watcher does learn is that
+     * this code existed and, by asking the claim endpoint, the coupon's name
+     * and benefit — public-ish metadata about a coupon nobody can use.
+     *
+     * Appended rather than inserted: readers index positionally, and shifting
+     * `type` or `name` would silently mislabel every order already published.
+     */
     tags.push([
       "coupon",
       input.coupon.applied.couponId,
       input.coupon.applied.benefit.type,
       input.coupon.applied.name,
+      input.coupon.applied.nonce,
     ])
     for (const d of input.coupon.discount) {
       tags.push(["discount", formatAmount({ amount: d.amount, currency: d.currency }), d.currency])

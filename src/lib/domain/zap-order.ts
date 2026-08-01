@@ -23,6 +23,12 @@ export interface ZapOrderCoupon {
   id: string
   type: string
   name: string
+  /**
+   * The redeemed code. Absent on orders published before it was added to the
+   * tag — those cannot be matched back to a single issued coupon, only to its
+   * definition.
+   */
+  nonce: string | null
 }
 
 /**
@@ -174,7 +180,12 @@ export function parseZapReceiptOrder(
     totals: amountTags("total"),
     coupon:
       couponTag?.[1] && couponTag[2]
-        ? { id: couponTag[1], type: couponTag[2], name: couponTag[3] ?? "" }
+        ? {
+            id: couponTag[1],
+            type: couponTag[2],
+            name: couponTag[3] ?? "",
+            nonce: couponTag[4] || null,
+          }
         : null,
     discounts: amountTags("discount"),
     receiptSats: receiptSats(receipt),
