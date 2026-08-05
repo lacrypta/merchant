@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "if [ -n \"$DATABASE_URL$DATABASE_POOL_URL\" ]; then drizzle-kit migrate; fi && next build",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
