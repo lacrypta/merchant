@@ -32,7 +32,8 @@ Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en 
 
 | Variable | Para qué |
 |---|---|
-| `DATABASE_URL` | Postgres, **sólo** para cupones. Sin esto, `/api/coupons/*` responde 503 y el resto de la app anda igual. |
+| `DATABASE_URL` | Postgres, **sólo** para cupones. Sin esto, `/api/coupons/*` responde 503 y el resto de la app anda igual. Es la conexión directa: con ella corren las migraciones. |
+| `DATABASE_POOL_URL` | El pooler del mismo Postgres, si el proveedor da uno. La app lo prefiere para consultar: en serverless cada instancia abre su pool, y contra la conexión directa eso agota el límite (o ni conecta — en Supabase el host directo es sólo IPv6). |
 | `COUPON_MANAGER_NSEC` | La identidad nostr de este servicio: firma los cupones que emite. Sin esto no se puede emitir ni canjear. |
 | `NEXT_PUBLIC_APP_URL` | El origen público. En producción **conviene setearlo**: es lo único que hace que la validación NIP-98 ignore los headers `x-forwarded-*`, que cualquiera puede falsificar. |
 | `SESSION_JWT_SECRET` | Firma los JWT de sesión, así el comerciante firma con nostr una vez por turno en vez de una vez por click. Sin esto se usa una clave por proceso: aceptable en una sola instancia, **hay que setearla con más de una** o los tokens de una los rechaza la otra. |
@@ -85,8 +86,12 @@ SESSION_JWT_SECRET=…             # opcional en una sola instancia
 
 ```bash
 npm run db:generate   # después de tocar el schema
-npm run db:migrate    # en cada deploy
+npm run db:migrate    # a mano; el deploy ya lo hace solo
 ```
+
+`npm run build` corre las migraciones antes de compilar **si hay `DATABASE_URL`**, y
+falla el build si no aplican: un deploy contra un esquema viejo rompe más callado.
+Sin `DATABASE_URL` no migra nada y compila igual.
 
 Sin esas variables la app arranca igual y los endpoints de cupones responden `503`: no tener base es un estado soportado.
 

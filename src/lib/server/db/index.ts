@@ -32,11 +32,20 @@ let warned = false
 export function getDb(): Db | null {
   if (cache.__couponDb !== undefined) return cache.__couponDb?.db ?? null
 
-  const connectionString = process.env.DATABASE_URL
+  /**
+   * The pooled URL wins when there is one. A managed Postgres hands out two
+   * addresses: the direct one, for migrations and psql, and a pooler for
+   * everything else. A serverless deploy opens a pool per instance against the
+   * direct address and either exhausts the connection limit or — on Supabase,
+   * whose direct host is IPv6-only — never connects at all, which is a 15s
+   * timeout on every coupon request. Migrations still use DATABASE_URL: see
+   * drizzle.config.ts.
+   */
+  const connectionString = process.env.DATABASE_POOL_URL || process.env.DATABASE_URL
   if (!connectionString) {
     if (!warned) {
       warned = true
-      console.warn("[coupons] DATABASE_URL is unset; the coupon endpoints will answer 503.")
+      console.warn("[coupons] no DATABASE_URL; the coupon endpoints will answer 503.")
     }
     cache.__couponDb = null
     return null
