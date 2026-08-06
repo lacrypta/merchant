@@ -1,106 +1,106 @@
-# Flujos
+# Flows
 
-Cómo se encadena todo, de punta a punta, y qué decisiones conviene no revertir sin leer el porqué.
+How it all chains together, end to end, and which decisions not to revert without reading why.
 
 ---
 
-## 1. Activar el servicio
+## 1. Activating the service
 
 ```
-Comerciante            Esta app                    Base            Relays
+Merchant               This app                    Database        Relays
     │                     │                          │               │
     │ "Activar servicio"  │                          │               │
     ├────────────────────►│ GET /api/coupons/manager │               │
     │                     │◄─── managerPubkey ───────┤               │
-    │  firma el 30078     │                          │               │
+    │  signs the 30078    │                          │               │
     │◄────────────────────┤                          │               │
-    ├────────────────────►│ PUT /discovery ─────────►│ guarda        │
-    │                     ├─────────── publica ──────────────────────►│
+    ├────────────────────►│ PUT /discovery ─────────►│ stores        │
+    │                     ├─────────── publishes ────────────────────►│
 ```
 
-Se guarda **apenas se firma**, antes de que los relays contesten: perder esa copia porque un relay tardó era el bug que este mecanismo existe para arreglar.
+It is stored **the moment it is signed**, before the relays answer: losing that copy because a relay was slow is the bug this mechanism exists to fix.
 
-Hasta que esté activado **no se pueden crear cupones**. Un cupón que nadie puede descubrir es una fila en una base que nadie alcanza. La puerta está en la UI, no en la API: un POS que ya sabe lo que hace puede seguir usando `/api/coupons`, y no gana nada porque nadie más puede descubrirlo.
+Until it is activated **no coupons can be created**. A coupon nobody can discover is a row in a database nobody can reach. The gate is in the UI, not in the API: a POS that already knows what it is doing can keep using `/api/coupons`, and gains nothing because nobody else can discover it.
 
 ---
 
-## 2. Emitir y canjear en un POS ajeno
+## 2. Minting and redeeming on somebody else's POS
 
 ```
-POS                        Relays              Este servicio
- │  lee el 30078 del npub    │                      │
+POS                        Relays              This service
+ │  reads the npub's 30078   │                      │
  ├──────────────────────────►│                      │
  │◄── mintUrl, claimUrl ─────┤                      │
  │                                                  │
- │  POST mintUrl  (NIP-98, npub autorizado)         │
+ │  POST mintUrl  (NIP-98, authorized npub)         │
  ├─────────────────────────────────────────────────►│
  │◄── coupon, name, npub, nonce, voucher ───────────┤
  │                                                  │
- │  verifica voucher.pubkey === managerPubkey       │
- │  muestra el QR con el nonce                      │
+ │  checks voucher.pubkey === managerPubkey         │
+ │  shows the QR with the nonce                     │
  │                                                  │
  │  POST claimUrl { nonce }                         │
  ├─────────────────────────────────────────────────►│
  │◄── status: success | claimed ────────────────────┤
 ```
 
-El POS no necesita saber nada de nosotros de antemano: el anuncio le dice a dónde pegarle, y el voucher le dice que la respuesta vino de quien el comerciante nombró. Ver [Eventos § cómo verificarlo](./cupones-nostr.md#cómo-verificarlo-sin-llamarnos).
+The POS needs to know nothing about us beforehand: the announcement tells it where to knock, and the voucher tells it the response came from whoever the merchant named. See [Nostr events § how to verify it](./cupones-nostr.md#how-to-verify-it-without-calling-us).
 
 ---
 
-## 3. Canje en la tienda de esta misma app
+## 3. Redeeming in this app's own storefront
 
-El checkout no necesita el anuncio: llama a sus propios endpoints.
+The checkout does not need the announcement: it calls its own endpoints.
 
-1. El comprador pega el nonce en el carrito (o llega con `?coupon=<nonce>`).
-2. **`GET claim`** valida sin consumir. Se chequea que el cupón sea **de esta tienda** — un despliegue sirve a muchos comercios y el endpoint responde por cualquier nonce que conozca; sin ese chequeo alguien podría llevar un 50% de un local a otro.
-3. El descuento se muestra en el total. Todavía no se consumió nada.
-4. Al tocar **"Generar factura"**, se firma el zap request (es local, no toca la red) y **`POST claim`** consume el cupón *antes* de pedir la factura, llevándose la orden firmada. Si otro lo usó en el medio, se avisa y se saca del carrito.
-5. El cupón queda en la orden como tags del zap request: `["coupon", id, tipo, nombre]` y un `["discount", monto, moneda]` por moneda. Los tags `total` siguen siendo **brutos**: bruto − descuento = pagado.
+1. The shopper pastes the nonce in the cart (or arrives with `?coupon=<nonce>`).
+2. **`GET claim`** validates without consuming. It is checked that the coupon belongs to **this shop** — one deployment serves many merchants and the endpoint answers for any nonce it knows; without that check somebody could carry a 50%-off from one shop to another.
+3. The discount is shown in the total. Nothing has been consumed yet.
+4. On tapping **"Generar factura"**, the zap request is signed (locally, no network) and **`POST claim`** consumes the coupon *before* asking for the invoice, carrying the signed order with it. If somebody else used it in between, the shopper is told and it comes off the cart.
+5. The coupon stays on the order as zap request tags: `["coupon", id, type, name]` and one `["discount", amount, currency]` per currency. The `total` tags stay **gross**: gross − discount = charged.
 
-**Si el total queda en cero**, el botón dice **"Reclamar"** y no hay factura, ni pago, ni recibo que esperar: el canje se hace igual (con `amountMsat: 0`) y la orden queda en estado `claimed`. Esa fila es el único registro del pedido, y es lo que hace que aparezca en `/admin/orders` con el badge *Reclamada* y en la pestaña **Canjeados** de `/admin/coupons`. Sin cupón aplicado el botón queda deshabilitado: no habría nonce contra el cual registrar nada.
+**If the total lands at zero**, the button reads **"Reclamar"** and there is no invoice, no payment and no receipt to wait for: the redemption happens anyway (with `amountMsat: 0`) and the order ends in the `claimed` state. That row is the order's only record, and it is what makes it show up in `/admin/orders` with the *Reclamada* badge and in the **Canjeados** tab of `/admin/coupons`. With no coupon applied the button stays disabled: there would be no nonce to file anything against.
 
-Si el comprador canjea y después abandona sin pagar, el cupón se quemó. Es un trade-off aceptado: canjear antes de facturar es mejor que facturar un descuento que después no se puede cobrar. El comerciante emite otro.
+If the shopper redeems and then abandons without paying, the coupon is burned. That is an accepted trade-off: redeeming before invoicing beats invoicing a discount that cannot then be charged. The merchant issues another.
 
-Una vez **pagada** la orden, se borra del `localStorage`. El recibo sigue en pantalla para quien pagó, pero el próximo que entre al checkout lo encuentra vacío en vez de encontrarse el comprobante de otro.
+Once the order is **paid**, it is cleared from `localStorage`. The receipt stays on screen for whoever paid, but the next person to open the checkout finds it empty instead of finding somebody else's receipt.
 
-### Los tres estados de una orden con cupón
+### The three states of an order with a coupon
 
-Lo que ve el comerciante en `/admin` depende de qué pasó con la plata:
+What the merchant sees in `/admin` depends on what happened to the money:
 
-| Estado | De dónde sale | Qué muestra |
+| State | Where it comes from | What it shows |
 |---|---|---|
-| **Cobrada** | Hay un zap receipt en los relays | El importe cobrado |
-| **Reclamada** | `amount_msat = 0` en el canje | "Sin cargo — cubierta por el cupón" |
-| **Con cupón** | Canje con importe, sin receipt todavía | "A cobrar N sat — importe facturado al canjear" |
+| **Cobrada** | There is a zap receipt on the relays | The amount charged |
+| **Reclamada** | `amount_msat = 0` on the redemption | "Sin cargo — cubierta por el cupón" |
+| **Con cupón** | Redemption with an amount, no receipt yet | "A cobrar N sat — importe facturado al canjear" |
 
-El tercero no se lista en `/admin/orders`: pertenece al receipt que va a llegar por él, y ponerlo ahí sería postear una orden que el comerciante no cobró, y después postearla dos veces.
+The third is not listed in `/admin/orders`: it belongs to the receipt that will arrive for it, and putting it there would post an order the merchant has not been paid for, and then post it twice.
 
 ---
 
-## 4. Decisiones que conviene no revertir sin leer el porqué
+## 4. Decisions worth not reverting without reading why
 
-**Del canje**
+**About redemption**
 
-- **`GET` valida y `POST` consume.** Si aplicar un cupón lo canjeara, quien pega un código y cierra la pestaña lo perdió.
-- **Se canjea ANTES de pedir la factura.** Al revés, dos cajas podrían honrar el mismo nonce; así el peor caso es un cupón quemado que el comercio reemite en dos toques.
-- **"Ya canjeado" es `200`, no un error.** Un POS que perdió la respuesta reintenta, y comparando `claimedAt` con su propio reloj sabe si el canje fue suyo.
-- **Un `zapRequest` inválido no cancela el canje.** Se pierde el registro, no el cupón del cliente.
+- **`GET` validates and `POST` consumes.** If applying a coupon redeemed it, whoever pastes a code and closes the tab has lost it.
+- **The redemption happens BEFORE asking for the invoice.** The other way round, two tills could honour the same nonce; this way the worst case is a burned coupon the merchant re-issues in two taps.
+- **"Already redeemed" is `200`, not an error.** A POS that lost the response retries, and by comparing `claimedAt` against its own clock it knows whether the redemption was its own.
+- **An invalid `zapRequest` does not cancel the redemption.** What is lost is the record, not the customer's coupon.
 
-**De lo que promete un cupón**
+**About what a coupon promises**
 
-- **El `benefit` se congela al emitir.** El voucher ya se firmó sobre esas condiciones: editar el cupón después no puede cambiar lo que promete uno que ya está en el celular de alguien.
-- **Archivar frena la emisión, no el canje.** Los que ya se entregaron eran una promesa del comercio. Para cortarlos, fecha de vencimiento pasada.
-- **Anular conserva la fila.** Borrarla haría que una caja lea "no existe" en lugar de "fue anulado".
+- **The `benefit` is frozen at mint time.** The voucher was already signed over those terms: editing the coupon afterwards cannot change what one already sitting in somebody's phone promises.
+- **Archiving stops minting, not redeeming.** The ones already handed out were a promise the merchant made. To cut those, use a past expiry date.
+- **Voiding keeps the row.** Deleting it would make a till read "does not exist" instead of "it was cancelled".
 
-**Del registro de la venta**
+**About the record of the sale**
 
-- **La orden se archiva en el canje, no después.** No hay tabla de órdenes: una orden pagada se reconstruye del zap receipt, y una reclamada no tiene receipt porque nadie la pagó. Si el `POST claim` no se la lleva, no existe en ningún lado.
-- **`amount_msat = 0` es lo que marca una orden reclamada.** Es lo que distingue "nunca va a tener recibo" de "todavía no llegó", y sin eso el libro de órdenes mostraría como cobrada una compra que el comprador abandonó.
-- **Los tags `total` del pedido van BRUTOS**, con el descuento aparte en `["coupon", …]` y `["discount", …]`. Así el libro de órdenes se lee como un ticket: ítems, menos cupón, igual lo cobrado.
+- **The order is filed at redemption time, not later.** There is no orders table: a paid order is reconstructed from the zap receipt, and a reclaimed one has no receipt because nobody paid it. If `POST claim` does not carry it, it exists nowhere.
+- **`amount_msat = 0` is what marks a reclaimed order.** It distinguishes "will never have a receipt" from "has not arrived yet", and without it the order book would show as charged a purchase the shopper abandoned.
+- **The order's `total` tags are GROSS**, with the discount separate in `["coupon", …]` and `["discount", …]`. That way the order book reads like a receipt: items, less coupon, equals charged.
 
-**De la aritmética**
+**About the arithmetic**
 
-- **El libro de órdenes imputa el descuento a la línea que lo recibió**, aunque el checkout cobre un solo total. Un cupón de una cerveza gratis se lleva el precio de una cerveza, no una tajada de cada ítem: repartirlo proporcionalmente deja a cada producto con una facturación que nunca tuvo. `discountByLine` hace ese reparto y `allocateOrderLineSats` pondera por el neto.
-- **El descuento escala cada subtotal por el mismo factor** en lugar de restarse de una moneda. En un carrito de una sola moneda es resta exacta; en uno mixto es lo único que deja el desglose en pesos sumando al total en sats.
-- **El tope acota en su propia moneda.** Convertir necesitaría una tabla de cotizaciones que esa capa no toma, y adivinar un número es peor que aplicar el techo donde fue escrito.
+- **The order book attributes the discount to the line that got it**, even though the checkout charges one total. A free-beer coupon takes the price of one beer, not a slice of every item: spreading it proportionally leaves every product with revenue it never had. `discountByLine` does that split and `allocateOrderLineSats` weights by the net.
+- **The discount scales every subtotal by the same factor** instead of subtracting from one currency. In a single-currency basket that is exact subtraction; in a mixed one it is the only thing that leaves the peso breakdown adding up to the sat total.
+- **The cap clamps in its own currency.** Converting would need a rate table that layer does not take, and guessing at a number is worse than applying the ceiling where it was authored.

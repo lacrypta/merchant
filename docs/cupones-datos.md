@@ -1,38 +1,38 @@
-# Datos
+# Data
 
-Cuatro tablas, en [`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts). Es la única parte de la app con Postgres, y el [por qué](./cupones.md#por-qué-hay-una-base-de-datos) está en la portada.
+Four tables, in [`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts). It is the only part of the app with Postgres, and the [why](./cupones.md#why-there-is-a-database) is on the front page.
 
-Los pubkeys se guardan siempre como **hex de 64 caracteres en minúscula**. `npub` es una codificación de display y nunca una clave acá, igual que en `nip05.ts`.
+Pubkeys are always stored as **lowercase 64-character hex**. `npub` is a display encoding and never a key here, same as in `nip05.ts`.
 
 ---
 
 ## `coupon_definitions`
 
-Lo que el comerciante escribió: un cupón que se puede emitir N veces.
+What the merchant authored: a coupon that can be minted N times.
 
-| Columna | Tipo | Notas |
+| Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` PK | |
-| `owner_pubkey` | `varchar(64)` | Indexado. El dueño |
+| `owner_pubkey` | `varchar(64)` | Indexed. The owner |
 | `name` | `varchar(80)` | |
-| `description` | `varchar(500)` | `''` cuando no tiene |
-| `image_url` | `varchar(500)` | https, o null |
+| `description` | `varchar(500)` | `''` when it has none |
+| `image_url` | `varchar(500)` | https, or null |
 | `type` | `coupon_type` | `percent \| fixed \| multibuy \| buy_x_get_y \| free_items` |
-| `percent` | `integer` | 1..100. Sólo `percent` |
-| `amount` | `numeric(14,2)` | Sólo `fixed`. **pg lo devuelve como string** |
-| `currency` | `varchar(3)` | Sólo `fixed` |
-| `buy_qty` / `pay_qty` | `integer` | Sólo `multibuy` |
-| `product_ds` | `jsonb` | El alcance. Null ⇒ todos los productos |
-| `buy_product_d` / `gift_product_d` | `uuid` | Sólo `buy_x_get_y` |
-| `free_items` | `jsonb` | `[{ d, qty }]`. Nunca null para ese tipo |
-| `cap_amount` / `cap_currency` | `numeric(14,2)` / `varchar(3)` | El tope. **Ambas nulas o ambas puestas** |
-| `max_uses` | `integer` | Null ⇒ ilimitado |
-| `minted_count` | `integer` | Ver abajo |
-| `expires_at` | `timestamptz` | Frena emisión **y** canje |
-| `archived_at` | `timestamptz` | Frena **sólo** la emisión |
+| `percent` | `integer` | 1..100. `percent` only |
+| `amount` | `numeric(14,2)` | `fixed` only. **pg returns it as a string** |
+| `currency` | `varchar(3)` | `fixed` only |
+| `buy_qty` / `pay_qty` | `integer` | `multibuy` only |
+| `product_ds` | `jsonb` | The scope. Null ⇒ every product |
+| `buy_product_d` / `gift_product_d` | `uuid` | `buy_x_get_y` only |
+| `free_items` | `jsonb` | `[{ d, qty }]`. Never null for that type |
+| `cap_amount` / `cap_currency` | `numeric(14,2)` / `varchar(3)` | The ceiling. **Both null, or both set** |
+| `max_uses` | `integer` | Null ⇒ unlimited |
+| `minted_count` | `integer` | See below |
+| `expires_at` | `timestamptz` | Stops minting **and** redeeming |
+| `archived_at` | `timestamptz` | Stops **only** minting |
 | `created_at` / `updated_at` | `timestamptz` | |
 
-Una fila, como la lee `psql`:
+One row, as `psql` reads it:
 
 ```
 id            | 55b5ee4f-4dcc-4a6a-a58e-6d1d94d811a3
@@ -55,108 +55,108 @@ expires_at    | 2025-12-02 00:00:00+00
 archived_at   |
 ```
 
-Esa fila es el `DefinitionJson` del [ejemplo de la API](./cupones-api.md#definitionjson).
+That row is the `DefinitionJson` from the [API example](./cupones-api.md#definitionjson).
 
-### Por qué columnas tipadas y no un jsonb
+### Why typed columns and not one jsonb
 
-El beneficio vive en **columnas tipadas y anulables**, no en un blob único: así la tabla se lee, se indexa y se corrige con SQL a mano cuando algo se rompe a las 3 de la mañana. `parseBenefit` en la capa de dominio es lo que garantiza que para cada `type` esté poblado el subconjunto correcto.
+The benefit lives in **typed, nullable columns** rather than a single blob: that way the table can be read, indexed and corrected with plain SQL when something breaks at 3am. `parseBenefit` in the domain layer is what guarantees the right subset is populated for each `type`.
 
-Las dos excepciones son listas, y por eso son jsonb: `product_ds` (el alcance) y `free_items` (los `{ d, qty }` que se regalan). Son columnas distintas a propósito — una **acota** un descuento y la otra **es** el descuento, y compartirlas obligaría a mirar `type` antes de saber cuál de las dos cosas estás leyendo.
+The two exceptions are lists, which is why they are jsonb: `product_ds` (the scope) and `free_items` (the `{ d, qty }` pairs handed over). They are separate columns on purpose — one **narrows** a discount and the other **is** the discount, and sharing them would force every reader to check `type` before knowing which of the two things they are looking at.
 
 ### `minted_count`
 
-Se incrementa **adentro del UPDATE guardado que emite**, que es lo que hace que el tope se sostenga bajo concurrencia. Contar filas en `coupon_mints` sería una carrera.
+It is incremented **inside the guarded UPDATE that mints**, which is what makes the cap hold under concurrency. Counting rows in `coupon_mints` would be a race.
 
-Anular una emisión lo **decrementa**: el lugar vuelve al máximo, porque "esta emisión nunca pasó" es exactamente lo que significa anular.
+Voiding an issuance **decrements** it: the slot goes back to the cap, because "this issuance never happened" is exactly what voiding means.
 
 ### `expires_at` vs `archived_at`
 
-`archived_at` frena **sólo las emisiones nuevas**; lo que ya está en la calle se sigue canjeando, porque fue una promesa que el comerciante hizo. Para cortar lo que está afuera se pone `expires_at` en el pasado — por eso `PATCH` acepta una fecha pasada y `POST` no.
+`archived_at` stops **only new mints**; what is already out in the world stays claimable, because it was a promise the merchant made. To cut those off, `expires_at` goes into the past — which is why `PATCH` accepts a past date and `POST` does not.
 
 ---
 
 ## `coupon_mints`
 
-Cada emisión. El nonce es la credencial al portador.
+One issuance each. The nonce is the bearer credential.
 
-| Columna | Tipo | Notas |
+| Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` PK | |
 | `definition_id` | `uuid` FK | `ON DELETE RESTRICT` |
-| `nonce` | `varchar(32)` | **Único**. 22 chars base64url |
-| `benefit` | `jsonb` | El **snapshot congelado** al emitir |
-| `minted_by_pubkey` | `varchar(64)` | Quién la emitió |
+| `nonce` | `varchar(32)` | **Unique**. 22 chars base64url |
+| `benefit` | `jsonb` | The **frozen snapshot** taken at mint time |
+| `minted_by_pubkey` | `varchar(64)` | Who issued it |
 | `minted_at` | `timestamptz` | |
 | `status` | `coupon_mint_status` | `minted \| claimed \| voided` |
 | `claimed_at` / `voided_at` | `timestamptz` | |
-| `order_event` | `jsonb` | El kind-9734 firmado, verbatim |
-| `order_id` | `varchar(64)` | **Indexado.** `order_event.id` |
-| `amount_msat` | `integer` | Lo que se iba a cobrar. `0` ⇒ reclamada |
+| `order_event` | `jsonb` | The signed kind-9734, verbatim |
+| `order_id` | `varchar(64)` | **Indexed.** `order_event.id` |
+| `amount_msat` | `integer` | What was going to be charged. `0` ⇒ reclaimed |
 
-Índices: `nonce` único, `(definition_id, status)` para la lista del modal, `order_id` para responder "¿qué cupón pagó la orden X?" sin escanear jsonb.
+Indexes: `nonce` unique, `(definition_id, status)` for the dialog's list, `order_id` to answer "which coupon paid for order X?" without scanning jsonb.
 
-### Por qué el beneficio se congela
+### Why the benefit is frozen
 
-Editar un cupón cambia la definición, pero el voucher que el manager ya firmó dice otra cosa. El canje sirve el snapshot, así que **un cupón en el teléfono de alguien vale lo que decía cuando se lo dieron**.
+Editing a coupon changes the definition, but the voucher the manager already signed says something else. Redemption serves the snapshot, so **a coupon in somebody's phone is worth what it said when they were given it**.
 
-### La orden cuelga del canje
+### The order hangs off the redemption
 
-Porque no hay otra tabla donde ponerla. Todo lo demás vive en relays, y una orden pagada se reconstruye de su zap receipt — pero un cupón que lleva el total a cero no produce factura y por lo tanto tampoco recibo.
+Because there is no other table to put it in. Everything else lives on relays, and a paid order is reconstructed from its zap receipt — but a coupon that takes the total to zero produces no invoice, and therefore no receipt either.
 
-Las tres columnas son anulables: un cupón canjeado en el mostrador no pasó por ningún checkout, y tampoco lo hizo nada canjeado antes de que la app empezara a archivarlas.
+The three columns are nullable: a coupon redeemed at a counter never went through a checkout, and neither did anything redeemed before the app started filing them.
 
-Se escriben **en el mismo UPDATE que canjea**, así que una fila no puede quedar canjeada sin la orden que la canjeó, y el segundo llamador —que por definición perdió la carrera— no puede pisar la orden del primero.
+They are written **in the same UPDATE that claims**, so a row cannot end up claimed without the order that claimed it, and the second caller — who by definition lost the race — cannot overwrite the first one's order.
 
-### `RESTRICT`, no `CASCADE`
+### `RESTRICT`, not `CASCADE`
 
-La ruta de borrado archiva una definición que tiene emisiones y borra en duro sólo una intacta. Con `RESTRICT`, "la definición desapareció entre la emisión y el canje" es imposible por construcción y no por convención.
+The delete route archives a definition that has issuances and hard-deletes only a pristine one. With `RESTRICT`, "the definition vanished between the mint and the claim" is impossible by construction rather than by convention.
 
 ---
 
 ## `coupon_minters`
 
-Quién puede emitir a nombre de quién.
+Who may mint on whose behalf.
 
-| Columna | Tipo | Notas |
+| Column | Type | Notes |
 |---|---|---|
-| `owner_pubkey` | `varchar(64)` | PK compuesta |
-| `minter_pubkey` | `varchar(64)` | PK compuesta |
-| `label` | `varchar(80)` | "Caja 2". Opcional |
+| `owner_pubkey` | `varchar(64)` | Composite PK |
+| `minter_pubkey` | `varchar(64)` | Composite PK |
+| `label` | `varchar(80)` | "Caja 2". Optional |
 | `created_at` | `timestamptz` | |
 
-Índice extra por `minter_pubkey`: es la búsqueda de `GET /api/coupons/mintable` — *"¿qué dueños me dejan emitir a mí?"*.
+An extra index on `minter_pubkey`: it is the lookup behind `GET /api/coupons/mintable` — *"which owners let ME mint?"*.
 
-**El dueño nunca es una fila acá.** Su derecho a emitir sus propios cupones es implícito, y guardarlo dejaría la UI mostrándole al comerciante como uno de sus propios empleados.
+**The owner is never a row here.** Their right to mint their own coupons is implicit, and storing it would leave the UI showing the merchant to themselves as one of their own employees.
 
 ---
 
 ## `coupon_discovery`
 
-El anuncio firmado del comerciante, tal cual.
+The merchant's signed announcement, as-is.
 
-| Columna | Tipo | Notas |
+| Column | Type | Notes |
 |---|---|---|
-| `owner_pubkey` | `varchar(64)` PK | Una fila por comerciante |
-| `event` | `jsonb` | El `SignedEvent` completo |
-| `event_created_at` | `integer` | El `created_at` propio del evento |
+| `owner_pubkey` | `varchar(64)` PK | One row per merchant |
+| `event` | `jsonb` | The full `SignedEvent` |
+| `event_created_at` | `integer` | The event's own `created_at` |
 | `updated_at` | `timestamptz` | |
 
-Guardar el evento **firmado** da dos cosas que un viaje a los relays no puede: la página sabe que está activada apenas carga, y re-publicarlo no necesita una firma nueva, porque los bytes que publicaríamos son los que ya tenemos.
+Keeping the **signed** event gives two things a relay round trip cannot: the page knows it is activated the instant it loads, and a re-broadcast needs no new signature, because the bytes we would publish are the bytes we already have.
 
-`event_created_at` está aparte para que una copia vieja no pueda pisar una más nueva. Kind 30078 es addressable, así que sólo hay un anuncio vigente por `d`.
+`event_created_at` is separate so a stale copy can never overwrite a newer one. Kind 30078 is addressable, so there is only ever one current announcement per `d`.
 
 ---
 
-## Migraciones
+## Migrations
 
-En [`drizzle/`](../drizzle/), aplicadas en el build. Las de este subsistema:
+In [`drizzle/`](../drizzle/), applied at build time. The ones for this subsystem:
 
-| Migración | Qué agregó |
+| Migration | What it added |
 |---|---|
 | `0000` | `coupon_definitions`, `coupon_mints`, `coupon_minters` |
 | `0001` | `coupon_discovery` |
-| `0002`–`0005` | El alcance por lista (`product_ds`), `voided_at`, `free_items` |
-| `0006` | `order_event`, `order_id`, `amount_msat` en `coupon_mints` |
-| `0007` | `cap_amount`, `cap_currency` en `coupon_definitions` |
+| `0002`–`0005` | List-based scope (`product_ds`), `voided_at`, `free_items` |
+| `0006` | `order_event`, `order_id`, `amount_msat` on `coupon_mints` |
+| `0007` | `cap_amount`, `cap_currency` on `coupon_definitions` |
 
-Las dos últimas son `ADD COLUMN` anulables: no reescriben filas y no rompen nada de lo que ya estaba emitido.
+The last two are nullable `ADD COLUMN`s: they rewrite no rows and break nothing already issued.

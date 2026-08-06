@@ -1,85 +1,89 @@
-# Cupones
+# Coupons
 
-Este servidor **emite y canjea cupones a nombre de un comerciante**, y el comerciante lo autoriza firmando un evento de nostr que dice dónde está el servicio. Cualquier punto de venta que lea ese evento puede emitir y canjear sin haber hablado nunca con nosotros.
+This server **mints and redeems coupons on a merchant's behalf**, and the merchant authorizes it by signing a nostr event that says where the service lives. Any point of sale that reads that event can mint and redeem without ever having talked to us.
 
-## Los documentos
+## The documents
 
-| Documento | Qué contesta |
+| Document | What it answers |
 |---|---|
-| **Este** | Por qué hay una base de datos, cómo se configura, quién es quién |
-| [Descuentos](./cupones-descuentos.md) | Qué descuenta cada tipo de cupón, con qué reglas de aritmética |
-| [API](./cupones-api.md) | Cada endpoint, con su cuerpo, su respuesta y sus errores |
-| [Eventos de nostr](./cupones-nostr.md) | El anuncio (30078) y el voucher (20402), y cómo verificarlos |
-| [Flujos](./cupones-flujos.md) | Cómo se encadena todo, y qué decisiones no conviene revertir |
-| [Datos](./cupones-datos.md) | Las tablas, sus columnas y qué garantiza cada una |
+| **This one** | Why there is a database, how it is configured, who is who |
+| [Discounts](./cupones-descuentos.md) | What each coupon type takes off, under which arithmetic rules |
+| [API](./cupones-api.md) | Every endpoint, with its body, its response and its errors |
+| [Nostr events](./cupones-nostr.md) | The announcement (30078) and the voucher (20402), and how to verify them |
+| [Flows](./cupones-flujos.md) | How it all chains together, and which decisions not to revert |
+| [Data](./cupones-datos.md) | The tables, their columns and what each one guarantees |
 
-Si estás integrando un POS, alcanza con [API](./cupones-api.md) y [Eventos](./cupones-nostr.md).
+If you are integrating a POS, [API](./cupones-api.md) and [Nostr events](./cupones-nostr.md) are enough.
 
 ---
 
-## Quién es quién
+## Who is who
 
-| Rol | Qué hace | Con qué clave |
+| Role | What they do | With which key |
 |---|---|---|
-| **Comerciante** (owner) | Crea cupones, autoriza emisores, firma el anuncio | La suya (NIP-07 / NIP-46) |
-| **Emisor** (minter) | Emite cupones de un comerciante que lo autorizó | La suya |
-| **Manager** | Firma los vouchers. Es este servidor | `COUPON_MANAGER_NSEC` |
-| **Portador** | Tiene el nonce y lo canjea. No necesita clave | Ninguna — el nonce es la credencial |
+| **Merchant** (owner) | Creates coupons, authorizes minters, signs the announcement | Theirs (NIP-07 / NIP-46) |
+| **Minter** | Mints coupons for a merchant who authorized them | Theirs |
+| **Manager** | Signs the vouchers. It is this server | `COUPON_MANAGER_NSEC` |
+| **Bearer** | Holds the nonce and redeems it. Needs no key | None — the nonce is the credential |
 
-Un despliegue sirve a **muchos comerciantes** a la vez. Todo lo que devuelve la API está acotado por el pubkey que firmó el pedido: un cupón de otro es indistinguible de uno que no existe, que es la respuesta correcta para alguien probando UUIDs.
-
----
-
-## Por qué hay una base de datos
-
-Es la única parte de la app con Postgres. El resto vive en relays y en `localStorage`, y eso es deliberado.
-
-El motivo es corto: *"¿este cupón ya se usó?"* tiene que tener **una sola respuesta** en el instante en que dos cajas la preguntan. Los relays son consistentes-eventualmente por diseño — perfecto para un catálogo, inservible para decidir quién se queda con el único descuento que quedaba.
-
-Todo lo que necesita esa garantía está en Postgres. Todo lo que necesita ser descubierto por terceros está en nostr.
-
-La consecuencia práctica: **no hay tabla de órdenes**, pero sí hay órdenes guardadas. Una compra pagada se reconstruye de su zap receipt en los relays; una que un cupón dejó en cero nunca genera factura ni receipt, así que se archiva en la fila del canje. Ver [Datos § la orden cuelga del canje](./cupones-datos.md#la-orden-cuelga-del-canje).
+One deployment serves **many merchants** at once. Everything the API returns is scoped by the pubkey that signed the request: somebody else's coupon is indistinguishable from one that does not exist, which is the correct answer to give a stranger probing UUIDs.
 
 ---
 
-## Configuración
+## Why there is a database
+
+It is the only part of the app with Postgres. Everything else lives on relays and in `localStorage`, and that is deliberate.
+
+The reason is short: *"has this coupon been used?"* has to have **exactly one answer** at the instant two tills ask it. Relays are eventually-consistent by design — perfect for a catalog, useless for deciding who gets the last remaining discount.
+
+Everything that needs that guarantee is in Postgres. Everything that needs to be discovered by third parties is on nostr.
+
+The practical consequence: **there is no orders table**, and yet orders are stored. A paid purchase is reconstructed from its zap receipt on the relays; one that a coupon took to zero never produces an invoice or a receipt, so it is filed on the redemption row. See [Data § the order hangs off the redemption](./cupones-datos.md#the-order-hangs-off-the-redemption).
+
+---
+
+## Configuration
 
 ```bash
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
-COUPON_MANAGER_NSEC=nsec1…       # la identidad que firma los vouchers
+COUPON_MANAGER_NSEC=nsec1…       # the identity that signs the vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
-SESSION_JWT_SECRET=…             # firma los JWT de sesión
+SESSION_JWT_SECRET=…             # signs the session JWTs
 ```
 
-Sin `DATABASE_URL` o sin `COUPON_MANAGER_NSEC` los endpoints de cupones responden `503` y el resto de la app funciona igual: **no tener base es un estado soportado**.
+Without `DATABASE_URL` or without `COUPON_MANAGER_NSEC` the coupon endpoints answer `503` and the rest of the app works the same: **having no database is a supported state**.
 
-Tres variables firman cosas y cada una falla distinto, a propósito:
+Three variables sign things and each fails differently, on purpose:
 
-- **`COUPON_MANAGER_NSEC` no tiene fallback**: firma artefactos publicados y longevos —vouchers, el anuncio— y una clave que rota en silencio los invalida meses después, sin aviso. Que falte es un 503.
-- **`SESSION_JWT_SECRET` sí tiene fallback aleatorio por proceso**, como `LN_PROXY_SECRET`: lo peor que pasa es una firma de más. **Pero con más de una instancia hay que setearla**, o un token emitido por A lo rechaza B y el cliente re-emite en request por medio — peor que no tener sesión.
-- **`NEXT_PUBLIC_APP_URL`**, si está seteada, es el **único** origen que NIP-98 acepta, y los headers `x-forwarded-*` se ignoran. Ver [API § NIP-98](./cupones-api.md#nip-98).
+- **`COUPON_MANAGER_NSEC` has no fallback**: it signs published, long-lived artifacts — vouchers, the announcement — and a key that silently rotates invalidates them months later, with no warning. Its absence is a 503.
+- **`SESSION_JWT_SECRET` does have a per-process random fallback**, like `LN_PROXY_SECRET`: the worst that happens is one extra signature. **But with more than one instance it must be set**, or a token minted by A is rejected by B and the client re-mints every other request — worse than having no session at all.
+- **`NEXT_PUBLIC_APP_URL`**, when set, is the **only** origin NIP-98 accepts, and the `x-forwarded-*` headers are ignored. See [API § NIP-98](./cupones-api.md#nip-98).
 
-### Migraciones
+### Migrations
 
 ```bash
-npm run db:generate   # después de tocar el schema
-npm run db:migrate    # a mano; el build ya lo hace solo
+npm run db:generate   # after touching the schema
+npm run db:migrate    # by hand; the build already does it
 ```
 
-**Las migraciones corren en el build**, no en runtime: `npm run build` ejecuta `drizzle-kit migrate` antes de compilar si hay `DATABASE_URL` (o `DATABASE_POOL_URL`), y falla el build si no aplican. Un migrador en runtime correría en carrera con varias instancias; dejarlo sólo en manos de quien despliega ya se probó y termina en una tabla que no existe.
+**Migrations run at build time**, not at runtime: `npm run build` executes `drizzle-kit migrate` before compiling if there is a `DATABASE_URL` (or `DATABASE_POOL_URL`), and fails the build if they do not apply. A runtime migrator would race across several instances; leaving it only to whoever deploys has already been tried and ends in a table that does not exist.
 
-Si el proveedor da dos URLs —una directa y un pooler— la app y las migraciones usan **el pooler**. Lo de libro es migrar por la conexión directa, pero esto corre adentro del deploy: si el build no la alcanza, no hay migración.
+If the provider hands out two URLs — a direct one and a pooler — the app and the migrations both use **the pooler**. The textbook move is migrating over the direct connection, but this runs inside the deploy: if the build cannot reach it, there is no migration.
 
 ---
 
-## Mapa del código
+## Code map
 
-| Qué | Dónde |
+| What | Where |
 |---|---|
-| Tipos, validación y aritmética | [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts) |
-| Formulario del wizard | [`src/lib/domain/coupon-schema.ts`](../src/lib/domain/coupon-schema.ts) |
-| El anuncio 30078 | [`src/lib/domain/coupon-discovery.ts`](../src/lib/domain/coupon-discovery.ts) |
+| Types, validation and arithmetic | [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts) |
+| The wizard's form | [`src/lib/domain/coupon-schema.ts`](../src/lib/domain/coupon-schema.ts) |
+| The 30078 announcement | [`src/lib/domain/coupon-discovery.ts`](../src/lib/domain/coupon-discovery.ts) |
 | SQL | [`src/lib/server/coupon-store.ts`](../src/lib/server/coupon-store.ts) |
-| Helpers compartidos por las rutas | [`src/lib/server/coupon-api.ts`](../src/lib/server/coupon-api.ts) |
-| Tablas | [`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts) |
+| Helpers shared by the routes | [`src/lib/server/coupon-api.ts`](../src/lib/server/coupon-api.ts) |
+| Tables | [`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts) |
 | Endpoints | [`src/app/api/coupons/`](../src/app/api/coupons/) |
+
+---
+
+> **A note on language.** The docs are in English; the app is not. Error messages, UI labels and the example coupon names you will see quoted throughout are **es-AR verbatim** — they are what the API actually returns and what the merchant actually reads on screen, so translating them here would make this documentation wrong.

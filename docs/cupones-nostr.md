@@ -1,17 +1,17 @@
-# Eventos de nostr
+# Nostr events
 
-Dos. Uno lo firma el comerciante y se publica; el otro lo firma este servidor y **nunca** se publica.
+Two. One is signed by the merchant and published; the other is signed by this server and **never** published.
 
-| Kind | Quién firma | Se publica | Para qué |
+| Kind | Who signs it | Published | What for |
 |---|---|---|---|
-| `30078` | El comerciante | Sí | Decir dónde está el servicio de cupones |
-| `20402` | Este servidor (manager) | No | Probar que un cupón salió de ese servicio |
+| `30078` | The merchant | Yes | Saying where the coupon service lives |
+| `20402` | This server (manager) | No | Proving a coupon came from that service |
 
 ---
 
-## Anuncio de descubrimiento — kind `30078`
+## Discovery announcement — kind `30078`
 
-Lo firma **el comerciante con su propia clave**. Es lo único que hace que una caja ajena pueda encontrar este servicio.
+Signed by **the merchant, with their own key**. It is the only thing that lets somebody else's till find this service.
 
 ```jsonc
 {
@@ -19,7 +19,7 @@ Lo firma **el comerciante con su propia clave**. Es lo único que hace que una c
   "pubkey": "2ad91f1dca2dcd5fc89e7208d1e5059f0bac0870d63fc3bac21c7a9388fa18fd",
   "created_at": 1762041600,
   "tags": [
-    ["d", "lacrypta.merchant/coupons"],   // el `d` es toda la cerca
+    ["d", "lacrypta.merchant/coupons"],   // the `d` is the whole fence
     ["client", "merchant-manager"]
   ],
   "content": "{\"v\":1,\"managerPubkey\":\"9f5c…32af\",\"mintUrl\":\"https://merchant.lacrypta.ar/api/coupons/mint\",\"claimUrl\":\"https://merchant.lacrypta.ar/api/coupons/claim\"}",
@@ -27,7 +27,7 @@ Lo firma **el comerciante con su propia clave**. Es lo único que hace que una c
 }
 ```
 
-El `content` parseado:
+The parsed `content`:
 
 ```json
 {
@@ -38,32 +38,32 @@ El `content` parseado:
 }
 ```
 
-| Campo | Qué es |
+| Field | What it is |
 |---|---|
-| `v` | `1`. Otra versión se **descarta**, nunca se migra a medias |
-| `managerPubkey` | Hex de la clave que firma los vouchers. Contra esta se verifican |
-| `mintUrl` | Absoluta. POST, NIP-98, sólo npubs autorizados |
-| `claimUrl` | Absoluta. GET para consultar, POST para canjear |
+| `v` | `1`. Any other version is **discarded**, never half-migrated |
+| `managerPubkey` | Hex of the key that signs vouchers. They are verified against this |
+| `mintUrl` | Absolute. POST, NIP-98, authorized npubs only |
+| `claimUrl` | Absolute. GET to check, POST to redeem |
 
-**El `content` es texto plano.** Todos los demás 30078 de esta app van cifrados con NIP-44 hacia el propio comerciante porque llevan credenciales; este es lo contrario: es un anuncio, y un POS de otra persona tiene que poder leerlo. No hay nada secreto adentro — el endpoint de emisión está protegido por NIP-98 y una lista de npubs autorizados, no porque la URL sea difícil de encontrar.
+**The `content` is plaintext.** Every other 30078 in this app is NIP-44 encrypted to the merchant themselves because it carries credentials; this one is the opposite: it is an announcement, and somebody else's POS has to be able to read it. There is nothing secret inside — the mint endpoint is protected by NIP-98 and a list of authorized npubs, not by the URL being hard to find.
 
-Las URLs tienen que ser `https`, con la excepción de `localhost`/`127.0.0.1` para poder ejercitar el flujo completo contra `npm run dev` sin un túnel.
+The URLs must be `https`, with an exception for `localhost`/`127.0.0.1` so the whole flow can be exercised against `npm run dev` without a tunnel.
 
-Kind 30078 es *addressable*, así que **mudarse de host es editar un evento**, no una migración que nadie puede coordinar.
+Kind 30078 is *addressable*, so **moving hosts is editing one event**, not a migration nobody can coordinate.
 
-### Dónde vive
+### Where it lives
 
-En los relays **y** en nuestra base (`coupon_discovery`, una fila por comerciante, el evento firmado tal cual).
+On the relays **and** in our database (`coupon_discovery`, one row per merchant, the signed event as-is).
 
-Los relays no son almacenamiento que controlemos: pierden eventos, se caen, y una lectura puede no traer uno que sí está publicado. La copia local es la que responde al cargar la página; los relays se verifican contra ella, y si falta se **reenvía solo** — sin pedir firma, porque los bytes ya están firmados.
+Relays are not storage we control: they drop events, they go away, and a read can miss one that is genuinely published. The local copy is what answers when the page loads; the relays are checked against it, and if one is missing the event is **re-broadcast on its own** — with no signature prompt, because the bytes are already signed.
 
-Al cargar se le pregunta **a cada relay por separado** si tiene el evento (un pedido por relay, filtrando por id). La lectura mezclada del catálogo no sirve para esto: "lo tenemos" y "lo tiene uno de cinco" se ven igual. A los que les falta se les publica **sólo a ellos**, una vez por evento por sesión.
+On load, **each relay is asked separately** whether it has the event (one request per relay, filtering by id). The catalog's merged read is no good for this: "we have it" and "one out of five has it" look identical. The ones missing it get a publish **addressed only to them**, once per event per session.
 
 ---
 
 ## Voucher — kind `20402`
 
-Lo firma **este servidor** con `COUPON_MANAGER_NSEC`, y viaja en la respuesta JSON de emisión y canje. Nunca se publica a un relay.
+Signed by **this server** with `COUPON_MANAGER_NSEC`, and it travels in the JSON response of mint and claim. It is never published to a relay.
 
 ```jsonc
 {
@@ -74,15 +74,15 @@ Lo firma **este servidor** con `COUPON_MANAGER_NSEC`, y viaja en la respuesta JS
     ["nonce", "hcLPDzERvvHzS4Vn0OLbAQ"],
     ["p", "2ad91f1dca2dcd5fc89e7208d1e5059f0bac0870d63fc3bac21c7a9388fa18fd"],
     ["coupon", "55b5ee4f-4dcc-4a6a-a58e-6d1d94d811a3"],
-    ["phase", "claimed"],                 // o "minted"
-    ["expiration", "1764633600"]          // NIP-40, sólo si vence
+    ["phase", "claimed"],                 // or "minted"
+    ["expiration", "1764633600"]          // NIP-40, only if it expires
   ],
   "content": "{…}",
   "id": "…", "sig": "…"
 }
 ```
 
-El `content` parseado (`VoucherPayload`):
+The parsed `content` (`VoucherPayload`):
 
 ```jsonc
 {
@@ -91,39 +91,39 @@ El `content` parseado (`VoucherPayload`):
   "owner": "2ad91f1dca2dcd5fc89e7208d1e5059f0bac0870d63fc3bac21c7a9388fa18fd",
   "name": "20% de verano",
   "description": "No acumulable.",
-  "image": "https://blossom.example/9f3c.webp",  // ausente si no tiene
+  "image": "https://blossom.example/9f3c.webp",  // absent when it has none
   "coupon": { "type": "percent", "percent": 20,
               "cap": { "amount": 5000, "currency": "ARS" } },
   "phase": "claimed",                            // "minted" | "claimed"
-  "claimedAt": 1762045200,                       // sólo en fase claimed
-  "expiresAt": 1764633600                        // ausente si no vence
+  "claimedAt": 1762045200,                       // only in the claimed phase
+  "expiresAt": 1764633600                        // absent when it never expires
 }
 ```
 
-Las claves opcionales se **omiten**, no se mandan como `null`. `parseVoucherContent` descarta cualquier `v` distinto de `1` en vez de migrarlo a medias — la misma regla que el carrito.
+Optional keys are **omitted**, not sent as `null`. `parseVoucherContent` discards any `v` other than `1` rather than half-migrating it — the same rule as the cart.
 
-**Por qué 20402:** está en el rango efímero (20000–29999), así que si alguna vez se filtra a un relay, uno que cumpla la spec lo reenvía pero no lo guarda — lo correcto para un evento cuyo contenido lleva un nonce al portador. Está libre en el registro de NIPs, y es el espejo efímero de 30402, el kind de listing sobre el que está construida esta app.
+**Why 20402:** it sits in the ephemeral range (20000–29999), so if it ever leaks to a relay, one that follows the spec relays it but does not store it — which is right for an event whose content carries a bearer nonce. It is free in the NIP registry, and it is the ephemeral mirror of 30402, the listing kind this app is built on.
 
-**Para qué sirve:** las respuestas de la API son JSON sobre HTTPS, lo que prueba que el cupón vino de quien tenga el certificado TLS. La firma del manager prueba que vino del servicio que **el comerciante nombró en su anuncio**, que es lo que un cajero necesita saber.
+**What it is for:** the API responses are JSON over HTTPS, which proves the coupon came from whoever holds the TLS certificate. The manager's signature proves it came from the service **the merchant named in their announcement**, which is what a cashier actually needs to know.
 
-### Cómo verificarlo, sin llamarnos
+### How to verify it, without calling us
 
 ```js
 import { verifyEvent } from "nostr-tools/pure"
 
-// 1. Leer el anuncio 30078 del comerciante → managerPubkey
+// 1. Read the merchant's 30078 → managerPubkey
 const discovery = JSON.parse(announcement.content)
 
-// 2. El voucher tiene que venir de esa clave
-if (voucher.pubkey !== discovery.managerPubkey) throw new Error("otro emisor")
+// 2. The voucher has to come from that key
+if (voucher.pubkey !== discovery.managerPubkey) throw new Error("different issuer")
 
-// 3. Firma válida — re-derivando el id, sin confiar en memos de la librería
-if (!verifyEvent(voucher)) throw new Error("firma inválida")
+// 3. Valid signature — re-deriving the id, not trusting library memos
+if (!verifyEvent(voucher)) throw new Error("invalid signature")
 
-// 4. El contenido tiene que decir lo mismo que la respuesta JSON
+// 4. The content has to say the same thing as the JSON response
 const payload = JSON.parse(voucher.content)
-if (payload.nonce !== respuesta.nonce) throw new Error("nonce distinto")
-if (payload.owner !== esperadoOwnerHex) throw new Error("otro comercio")
+if (payload.nonce !== response.nonce) throw new Error("different nonce")
+if (payload.owner !== expectedOwnerHex) throw new Error("different merchant")
 ```
 
-El paso 3 importa más de lo que parece: `nostr-tools` marca los eventos que ya verificó con un símbolo **que se copia con el spread**, así que `{...evento, tags: [...]}` arrastra un "ya verificado" viejo sobre un objeto mutado. Nuestro `verifySignedEvent` reconstruye los siete campos canónicos justamente para tirar ese memo.
+Step 3 matters more than it looks: `nostr-tools` marks events it has already verified with a symbol **that survives a spread**, so `{...event, tags: [...]}` drags a stale "already verified" flag onto a mutated object. Our `verifySignedEvent` rebuilds the seven canonical fields precisely to drop that memo.

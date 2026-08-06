@@ -1,149 +1,149 @@
-# Descuentos
+# Discounts
 
-Qué descuenta cada tipo de cupón y con qué reglas. Todo esto vive en [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts) y es **puro** — sin React, sin red, sin reloj. El servidor guarda estas formas en Postgres y la tienda las cotiza; los dos pasan por el mismo módulo, así que un descuento no puede significar una cosa en la caja y otra en la base.
+What each coupon type takes off, and under which rules. All of this lives in [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts) and is **pure** — no React, no network, no clock. The server stores these shapes in Postgres and the storefront prices them; both go through the same module, so a discount cannot mean one thing at the till and another in the database.
 
-Ver también: [la forma JSON exacta de cada tipo](./cupones-api.md#benefit), con ejemplos listos para copiar.
+See also: [the exact JSON shape of each type](./cupones-api.md#benefit), with copy-paste examples.
 
 ---
 
-## Los cinco tipos
+## The five types
 
-`Benefit` es una unión discriminada, no una bolsa de campos opcionales: "un 2x1 con porcentaje" no existe, y el sistema de tipos lo dice una vez acá en lugar de que cada llamador lo re-chequee.
+`Benefit` is a discriminated union, not a bag of optional fields: "a 2-for-1 with a percentage" is not a thing, and the type system says so once here instead of every caller re-checking.
 
-| Tipo | Forma | Ejemplo |
+| Type | Shape | Example |
 |---|---|---|
-| `percent` | `{ type, percent, productDs? }` | 10% de descuento |
-| `fixed` | `{ type, amount, currency, productDs? }` | ARS 500 menos |
-| `multibuy` | `{ type, buyQty, payQty, productDs? }` | 2x1, 3x2 |
-| `buyXgetY` | `{ type, buyProductD, giftProductD }` | Comprá A, llevate B gratis |
-| `freeItems` | `{ type, items: [{ d, qty }] }` | 2 cafés gratis |
+| `percent` | `{ type, percent, productDs? }` | 10% off |
+| `fixed` | `{ type, amount, currency, productDs? }` | ARS 500 off |
+| `multibuy` | `{ type, buyQty, payQty, productDs? }` | 2-for-1, 3-for-2 |
+| `buyXgetY` | `{ type, buyProductD, giftProductD }` | Buy A, get B free |
+| `freeItems` | `{ type, items: [{ d, qty }] }` | 2 free coffees |
 
-Los cinco aceptan además un **`cap`** opcional. Ver [Tope de descuento](#tope-de-descuento).
+All five also accept an optional **`cap`**. See [Discount cap](#discount-cap).
 
-`currency` es `ARS`, `USD` o `SAT`. En sats el monto tiene que ser **entero**: no se puede cobrar medio satoshi, y redondearlo en silencio haría que el cupón valga algo distinto de lo que dice.
+`currency` is `ARS`, `USD` or `SAT`. In sats the amount has to be a **whole number**: half a satoshi cannot be charged, and rounding it silently would make the coupon worth something other than what it says.
 
-### Límites
+### Limits
 
-| Constante | Valor | Qué acota |
+| Constant | Value | What it bounds |
 |---|---|---|
-| `MAX_COUPON_NAME` | 80 | Caracteres del nombre |
-| `MAX_COUPON_DESCRIPTION` | 500 | Caracteres de la descripción |
-| `MAX_COUPON_IMAGE_URL` | 500 | Largo de la URL de imagen |
-| `MAX_MULTIBUY_QTY` | 100 | `buyQty` y `payQty` |
-| `MAX_FREE_QTY` | 100 | Unidades de un producto en `freeItems` |
-| `MAX_COUPON_PRODUCTS` | 50 | Productos que un cupón puede nombrar |
-| `MAX_COUPON_USES` | 1.000.000 | Emisiones por definición |
+| `MAX_COUPON_NAME` | 80 | Characters in the name |
+| `MAX_COUPON_DESCRIPTION` | 500 | Characters in the description |
+| `MAX_COUPON_IMAGE_URL` | 500 | Length of the image URL |
+| `MAX_MULTIBUY_QTY` | 100 | `buyQty` and `payQty` |
+| `MAX_FREE_QTY` | 100 | Units of one product in `freeItems` |
+| `MAX_COUPON_PRODUCTS` | 50 | Products a single coupon may name |
+| `MAX_COUPON_USES` | 1,000,000 | Mints per definition |
 
 ---
 
-## Cuánto descuenta cada uno
+## What each one discounts
 
-Contra un carrito de **2 empanadas a ARS 100** y **1 café a ARS 250** (bruto: ARS 450):
+Against a basket of **2 empanadas at ARS 100** and **1 coffee at ARS 250** (gross: ARS 450):
 
-| Cupón | Descuenta | Por qué |
+| Coupon | Takes off | Why |
 |---|---|---|
-| `percent` 10% | ARS 45 | 10% del subtotal de cada moneda |
-| `percent` 10%, `cap` ARS 20 | ARS 20 | El tope corta antes |
-| `fixed` ARS 500 | ARS 450 | Topeado al valor del carrito |
-| `fixed` ARS 500 en café | ARS 250 | Topeado a lo que vale el café en el carrito |
-| `multibuy` 2x1 en empanada | ARS 100 | Un grupo completo de 2 ⇒ 1 gratis |
-| `buyXgetY` empanada → café | ARS 250 | Un regalo, siempre uno |
-| `freeItems` 1 empanada + 1 café | ARS 350 | Las unidades regaladas, a su precio de línea |
-| `freeItems` 3 empanadas | ARS 200 | Sólo hay 2 en el carrito: se regalan 2 |
+| `percent` 10% | ARS 45 | 10% of each currency's subtotal |
+| `percent` 10%, `cap` ARS 20 | ARS 20 | The cap cuts in first |
+| `fixed` ARS 500 | ARS 450 | Capped at the basket's value |
+| `fixed` ARS 500 on coffee | ARS 250 | Capped at what the coffee is worth in the basket |
+| `multibuy` 2-for-1 on empanada | ARS 100 | One complete group of 2 ⇒ 1 free |
+| `buyXgetY` empanada → coffee | ARS 250 | One gift, always one |
+| `freeItems` 1 empanada + 1 coffee | ARS 350 | The gifted units, at their line price |
+| `freeItems` 3 empanadas | ARS 200 | There are only 2 in the basket: 2 are given away |
 
 ---
 
-## Alcance por producto
+## Product scope
 
-Los tres primeros aceptan `productDs`: una lista de `d` de productos (los UUID que esta app genera para cada NIP-99).
+The first three accept `productDs`: a list of product `d`s (the UUIDs this app generates for each NIP-99 listing).
 
-**Ausente significa todos.** Ese default es la mitad importante: alguien que ofrece "10% off" quiere decir la tienda entera, y obligarlo a tildar el catálogo completo para decirlo sería un peor sistema de cupones. Una lista vacía se normaliza a ausente — quien limpió el picker quiso decir "todos", no "ninguno".
+**Absent means everything.** That default is the important half: somebody offering "10% off" means the whole shop, and making them tick every product to say so would be a worse coupon system. An empty list is normalized to absent — whoever cleared the picker meant "all", not "none".
 
-Con lista:
+With a list:
 
-- **`percent`** se calcula sólo sobre esas líneas.
-- **`fixed`** se topea en lo que valen esas líneas *en la moneda del cupón*. "ARS 500 en café" contra un carrito con ARS 200 de café y ARS 5000 de otras cosas descuenta 200. Sin ese tope, un cupón acotado terminaría descontando el resto del carrito.
-- **`multibuy`** se cuenta por línea: con varios productos, cada uno suma por su cuenta. "2x1 en cualquiera de estos tres" son tres promos independientes, no una compartida.
+- **`percent`** is computed over those lines only.
+- **`fixed`** is capped at what those lines are worth *in the coupon's currency*. "ARS 500 off coffee" against a basket holding ARS 200 of coffee and ARS 5000 of everything else takes off 200. Without that cap, a narrowed coupon would quietly discount the rest of the basket.
+- **`multibuy`** is counted per line: with several products, each one adds up on its own. "2-for-1 on any of these three" is three independent promos, not one shared between them.
 
-`buyXgetY` no lleva `productDs` porque ya nombra sus dos productos. `A === B` es legal y equivale a un 2x1.
+`buyXgetY` carries no `productDs` because it already names its two products. `A === B` is legal and equals a 2-for-1.
 
-> **Compatibilidad:** `parseBenefit` todavía acepta `productD` en singular. Los cupones emitidos guardan su beneficio como snapshot congelado, y las filas escritas antes de que el alcance fuera una lista tienen que seguir parseando — si no, un 2x1 que alguien tiene en el teléfono dejaría de funcionar.
+> **Compatibility:** `parseBenefit` still accepts a singular `productD`. Minted coupons store their benefit as a frozen snapshot, and rows written before the scope was a list have to keep parsing — otherwise a 2-for-1 sitting in somebody's phone would stop working.
 
 ---
 
-## Tope de descuento
+## Discount cap
 
-Cualquiera de los cinco acepta un **`cap`** opcional:
+Any of the five accepts an optional **`cap`**:
 
 ```jsonc
 { "type": "percent", "percent": 20, "cap": { "amount": 5000, "currency": "ARS" } }
 ```
 
-Es "20% de descuento, hasta ARS 5.000", y es lo que hace que un porcentaje se pueda repartir sin miedo — sin tope, un solo carrito grande se lleva puesto todo el presupuesto de la promo.
+It is "20% off, up to ARS 5,000", and it is what makes a percentage safe to hand out — without it, one unusually large basket eats the whole promo budget.
 
-Va en **todos** los tipos a propósito: un 2x1 sobre un cajón de vino y un producto gratis caro necesitan el mismo freno, y tenerlo sólo en `percent` sería un agujero arbitrario. Se intersecta sobre la unión en vez de repetirse en cada miembro — escribirlo cinco veces es cómo el sexto tipo termina sin él.
+It applies to **every** type on purpose: a 2-for-1 on a case of wine and an expensive free product need the same brake, and having it only on `percent` would be an arbitrary hole. It is intersected onto the union rather than repeated in each member — writing it five times is how the sixth type ends up without it.
 
-Reglas:
+Rules:
 
-- **Acota la entrada de su propia moneda y deja el resto.** La misma regla que ya sigue `fixed`, y por el mismo motivo: convertir necesitaría la tabla de cotizaciones que esa capa deliberadamente no toma, y adivinar un número es peor que aplicar el techo donde fue escrito. Todo carrito real es de una sola moneda, donde esto es exactamente "hasta ARS 5.000".
-- **En el libro de órdenes se reparte escalado** entre las líneas (`discountByLine`), no cortado de la primera: el techo es una propiedad del descuento entero, y descontárselo a un producto en particular reportaría que ese producto absorbió un recorte que no tuvo.
-- **`0` no es un tope**, es "sin tope". Un techo en cero sería un cupón que no descuenta nada, que nadie escribe a propósito.
-- En sats tiene que ser **entero**, igual que `fixed`.
+- **It clamps the entry in its own currency and leaves the rest alone.** The same rule `fixed` already follows, and for the same reason: converting would need the rate table that layer deliberately does not take, and guessing at a number is worse than applying the ceiling where it was authored. Every real basket is single-currency, where this is exactly "up to ARS 5,000".
+- **In the order book it is spread proportionally** across the lines (`discountByLine`), not cut off the first one: the ceiling is a property of the whole discount, and taking it out of one product would report that product as having absorbed a cut it never had.
+- **`0` is not a cap**, it is "no cap". A ceiling of zero would be a coupon that discounts nothing, which nobody authors on purpose.
+- In sats it has to be a **whole number**, same as `fixed`.
 
-Ejemplo del reparto escalado: un 50% con tope de ARS 500 contra dos líneas de ARS 3.000 y ARS 1.000 daría 1.500 y 500 sin tope; con tope da **375 y 125** — la misma proporción sobre 500.
-
----
-
-## Producto gratis (`freeItems`)
-
-El único beneficio **sin condición de compra**: el cupón *es* el producto. Se elige una lista de productos con su cantidad — `[{ d, qty }]` — y esas unidades salen del total.
-
-Es la excepción a la regla de "ausente significa todos", y a propósito: **acá la lista vacía no significa "todos"**, significa que el cupón es inválido. En los otros tipos "todos" es un descuento sobre la tienda; en este sería regalar el catálogo, que no es algo que alguien quiera decir sin querer.
-
-`parseBenefit` rechaza:
-
-- la lista vacía (`elegí al menos un producto`),
-- un producto repetido — dos entradas del mismo café podrían ser 2 o 5, y adivinar cuál es peor que pedir que lo escriban una vez,
-- cantidades fuera de 1..`MAX_FREE_QTY`.
-
-Dos reglas que caen de que igual hay que tener el producto en el carrito:
-
-- **Se topea contra el carrito.** Un cupón por 3 cafés contra un carrito con 1 regala 1. Nunca descuenta unidades que no están.
-- **Se aplica producto por producto.** Si el cupón da 1 empanada y 2 cafés, y en el carrito hay sólo empanada, la empanada sale gratis igual. Por eso `unmet.anyOf` es `true`: alcanza con cualquiera de los productos para que el cupón haga algo, y la tienda dice "agregá alguno de estos" en vez de exigir la lista completa.
-
-La diferencia con `buyXgetY` es la condición: aquel exige que el producto pagado esté en el carrito y regala **uno**; este no exige nada y regala **las cantidades que dice**.
+An example of the proportional spread: a 50% off with a cap of ARS 500, against two lines of ARS 3,000 and ARS 1,000, would give 1,500 and 500 uncapped; with the cap it gives **375 and 125** — the same proportion over 500.
 
 ---
 
-## Reglas de la aritmética
+## Free product (`freeItems`)
 
-Viven en `priceCart()` y son las que evitan cobrar mal:
+The only benefit with **no purchase condition**: the coupon *is* the product. You pick a list of products with a quantity each — `[{ d, qty }]` — and those units come off the total.
 
-- **El redondeo pasa una sola vez, sobre el carrito ya descontado.** Es la regla de [`rates.ts`](../src/lib/domain/rates.ts): un total es el techo de la suma, nunca la suma de los techos. Por eso el descuento se aplica **escalando** cada subtotal por el mismo factor en vez de restar de una moneda — en un carrito mixto, restar de la fila en ARS dejaría el desglose sin sumar al total en sats.
-- **El tope se aplica antes que todo lo demás.** `discountEntries` ya devuelve la entrada acotada, así que la conversión a sats y el clamp contra el valor del carrito trabajan sobre el número que el cupón realmente promete.
-- **Se puede llegar a cero.** `MIN_CHARGE_SATS` es 0. Una factura de cero sats sigue sin ser pagable — las billeteras la rechazan y LNURL declara un `minSendable` de al menos 1 — así que un total en cero **no genera factura**: el checkout cambia "Generar factura" por **"Reclamar"** y el canje del cupón pasa a ser el registro del pedido. Ver [Flujos § 3](./cupones-flujos.md#3-canje-en-la-tienda-de-esta-misma-app).
-- **Un descuento que no se puede convertir no se adivina.** Si falta la cotización de una moneda, el cupón no aplica y se dice por qué.
+It is the exception to the "absent means everything" rule, and deliberately so: **here an empty list does not mean "all"**, it means the coupon is invalid. In the other types "all" is a discount over the shop; in this one it would be giving away the catalog, which is not something anybody means by accident.
 
-### Cuando el cupón no aplica
+`parseBenefit` rejects:
 
-`priceCart` devuelve `unmet` con el motivo:
+- the empty list (`elegí al menos un producto`),
+- a repeated product — two entries of the same coffee could be 2 or 5, and guessing which is worse than asking for it once,
+- quantities outside 1..`MAX_FREE_QTY`.
 
-| `unmet.kind` | Significa | Qué dice la tienda |
+Two rules that fall out of still needing the product in the basket:
+
+- **It is capped against the basket.** A coupon for 3 coffees against a basket holding 1 gives 1. It never discounts units that are not there.
+- **It applies product by product.** If the coupon gives 1 empanada and 2 coffees, and the basket only holds empanada, the empanada comes out free anyway. That is why `unmet.anyOf` is `true`: any one of the products is enough for the coupon to do something, and the storefront says "add one of these" instead of demanding the full list.
+
+The difference with `buyXgetY` is the condition: that one requires the paid product to be in the basket and gives away **one**; this one requires nothing and gives away **the quantities it names**.
+
+---
+
+## Arithmetic rules
+
+They live in `priceCart()` and they are what keeps the charge honest:
+
+- **Rounding happens exactly once, over the already-discounted basket.** That is the rule from [`rates.ts`](../src/lib/domain/rates.ts): a total is the ceiling of the sum, never the sum of the ceilings. That is why the discount is applied by **scaling** every subtotal by the same factor instead of subtracting from one currency — in a mixed basket, subtracting from the ARS row would leave the breakdown not adding up to the sat total.
+- **The cap is applied before anything else.** `discountEntries` already returns the clamped entry, so the conversion to sats and the clamp against the basket's value both work on the number the coupon actually promises.
+- **Zero is reachable.** `MIN_CHARGE_SATS` is 0. A zero-sat invoice is still unpayable — wallets reject it and LNURL declares a `minSendable` of at least 1 — so a zero total **produces no invoice**: the checkout swaps "Generar factura" for **"Reclamar"** and the coupon redemption becomes the record of the order. See [Flows § 3](./cupones-flujos.md#3-redeeming-in-this-apps-own-storefront).
+- **A discount that cannot be converted is not guessed at.** If a currency's rate is missing, the coupon does not apply and it says why.
+
+### When the coupon does not apply
+
+`priceCart` returns `unmet` with the reason:
+
+| `unmet.kind` | Means | What the storefront says |
 |---|---|---|
-| `empty-cart` | No hay nada en el carrito | "Agregá productos para usar el cupón" |
-| `unquotable` | Falta la cotización de una moneda | "No pudimos convertir USD a sats todavía" |
-| `needs-products` | Faltan los productos que el cupón nombra | "Te falta agregar 2 × Café" |
+| `empty-cart` | Nothing in the basket | "Agregá productos para usar el cupón" |
+| `unquotable` | A currency's rate is missing | "No pudimos convertir USD a sats todavía" |
+| `needs-products` | The products the coupon names are missing | "Te falta agregar 2 × Café" |
 
-`needs-products` trae además `anyOf`, que distingue "alcanza con uno de estos" (porcentaje o monto acotados, y `freeItems`) de "hacen falta los dos" (`buyXgetY`). Unir las dos con "y" convertiría en silencio la primera en la segunda.
+`needs-products` also carries `anyOf`, which distinguishes "any one of these is enough" (scoped percentage or fixed amount, and `freeItems`) from "you need both" (`buyXgetY`). Joining the first with "and" would silently turn it into the second.
 
-### Imputación por línea
+### Per-line attribution
 
-`discountEntries` contesta *cuánto, por moneda* — que es todo lo que el checkout necesita, porque cobra un solo total. El libro de órdenes necesita la otra mitad: `discountByLine` reparte ese mismo descuento entre **las líneas de las que realmente salió**.
+`discountEntries` answers *how much, per currency* — which is all the checkout needs, because it charges one total. The order book needs the other half: `discountByLine` splits that same discount across **the lines it actually came off**.
 
-Un cupón de una cerveza gratis se llevó el precio de una cerveza, no una tajada de cada línea. Repartirlo proporcionalmente deja a cada producto del carrito con una facturación que nunca tuvo — y el "Reporte por producto" de `/admin/orders` sale mal para todos.
+A free-beer coupon took the price of one beer, not a slice of every line. Spreading it proportionally leaves every product in the basket with revenue it never had — and the "Reporte por producto" on `/admin/orders` comes out wrong for all of them.
 
-| Tipo | Cómo se reparte |
+| Type | How it is split |
 |---|---|
-| `multibuy`, `buyXgetY`, `freeItems` | Unidades enteras del producto nombrado. El único reparto honesto |
-| `percent` | El porcentaje sobre cada línea alcanzada |
-| `fixed` | Proporcional, y **sólo** sobre las líneas de su alcance y su moneda — una suma global genuinamente no tiene línea dueña |
+| `multibuy`, `buyXgetY`, `freeItems` | Whole units of the named product. The only honest split |
+| `percent` | The percentage over each line in scope |
+| `fixed` | Proportionally, and **only** over the lines in its scope and its currency — a lump sum genuinely has no line of its own |

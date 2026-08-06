@@ -1,86 +1,88 @@
-# API de cupones
+# Coupons API
 
-Referencia completa: cada endpoint con su cuerpo, su respuesta y sus errores, y el esquema de cada tipo que devuelve.
+Full reference: every endpoint with its body, its response and its errors, and the schema of every type it returns.
 
-Los ejemplos son reales — copiados de una corrida contra `npm run dev` — con los identificadores cambiados.
+The examples are real — copied from a run against `npm run dev` — with the identifiers swapped.
 
-- [Convenciones](#convenciones)
-- [Autenticación](#autenticación)
-- [Tipos de retorno](#tipos-de-retorno)
+> **Error messages and example names are quoted verbatim in es-AR.** They are what the API actually returns; translating them here would make this document wrong about the wire.
+
+- [Conventions](#conventions)
+- [Authentication](#authentication)
+- [Return types](#return-types)
 - [Endpoints](#endpoints)
-- [Catálogo de errores](#catálogo-de-errores)
-- [Cliente de ejemplo](#cliente-de-ejemplo)
+- [Error catalog](#error-catalog)
+- [Example client](#example-client)
 
 ---
 
-## Convenciones
+## Conventions
 
-**Base URL.** La del despliegue. En este documento, `https://merchant.lacrypta.ar`.
+**Base URL.** The deployment's own. In this document, `https://merchant.lacrypta.ar`.
 
-**CORS abierto en todas.** El preflight incluye `Authorization`, que no es un header safelisted y sin declararlo fallaría sólo para clientes cross-origin — es decir, sólo para los POS de terceros, que son justamente los que importan.
+**CORS is open on all of them.** The preflight includes `Authorization`, which is not a safelisted header — leaving it out would fail only for cross-origin clients, which is to say only for third-party POS apps, which are exactly the ones that matter.
 
 ```http
 Access-Control-Allow-Origin: *
-Access-Control-Allow-Methods: <los de la ruta>, OPTIONS
+Access-Control-Allow-Methods: <the route's own>, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
 Access-Control-Max-Age: 86400
 ```
 
-**`Cache-Control: no-store` en todas menos una.** El estado autenticado es por-llamador. La excepción es `GET /api/coupons/manager`, que es `public, max-age=300` porque la clave es estable durante la vida del despliegue.
+**`Cache-Control: no-store` on all but one.** Authenticated state is per-caller. The exception is `GET /api/coupons/manager`, which is `public, max-age=300` because the key is stable for the life of the deployment.
 
-**Errores.** Siempre JSON, siempre en castellano, siempre con la misma envoltura:
+**Errors.** Always JSON, always in Spanish, always the same envelope:
 
 ```json
 { "error": "No estás autorizado a emitir este cupón." }
 ```
 
-Algunos agregan un campo:
+Some add a field:
 
-| Campo extra | Cuándo | Para qué |
+| Extra field | When | What for |
 |---|---|---|
-| `retryAfter` | `429` | Segundos hasta que la ventana se libera |
-| `reason` | `401` | Máquina-legible: `expired`, `replay`, `url-mismatch`, `session-expired`, `session-invalid`, `malformed`, `missing`, `too-large` |
+| `retryAfter` | `429` | Seconds until the window frees up |
+| `reason` | `401` | Machine-readable: `expired`, `replay`, `url-mismatch`, `session-expired`, `session-invalid`, `malformed`, `missing`, `too-large` |
 
-**Límites de tamaño.** Cuerpo: 16 KB (`413`). Header `Authorization`: 8 KB (`401` con `reason: "too-large"`). Un evento firmado en base64 pesa ~700 bytes, así que 8 KB es generoso y acotado.
+**Size limits.** Body: 16 KB (`413`). `Authorization` header: 8 KB (`401` with `reason: "too-large"`). A signed event base64s to ~700 bytes, so 8 KB is generous and bounded.
 
-**Rate limits.** Por IP, por proceso, ventana de 60 s. **No autorizan nada** — le suben el costo a quien insista, y no se comparten entre instancias.
+**Rate limits.** Per IP, per process, 60 s window. **They authorize nothing** — they raise the cost for whoever insists, and they are not shared across instances.
 
-| Bucket | Máx/min | Rutas |
+| Bucket | Max/min | Routes |
 |---|---|---|
 | `auth-session` | 20 | `POST /api/auth/session` |
-| `coupons-mgmt` | 60 | Todo lo de gestión: `/api/coupons`, `{id}`, `mints`, `minters`, `discovery`, `mintable`, `redemptions` |
+| `coupons-mgmt` | 60 | Everything management: `/api/coupons`, `{id}`, `mints`, `minters`, `discovery`, `mintable`, `redemptions` |
 | `coupon-mint` | 30 | `POST /api/coupons/mint` |
 | `coupon-check` | 60 | `GET /api/coupons/claim` |
 | `coupon-claim` | 30 | `POST /api/coupons/claim` |
 
-`auth-session` tiene bucket propio a propósito: una página de cupones ocupada no puede agotarle el presupuesto al login, ni al revés.
+`auth-session` gets its own bucket on purpose: a busy coupons page must not be able to exhaust the login budget, or the other way round.
 
-**Precondiciones.** Sin `DATABASE_URL` toda ruta que toque la base responde `503`. Sin `COUPON_MANAGER_NSEC`, las que firman vouchers (`mint`, `POST claim`) responden `503`.
+**Preconditions.** Without `DATABASE_URL`, every route that touches the database answers `503`. Without `COUPON_MANAGER_NSEC`, the ones that sign vouchers (`mint`, `POST claim`) answer `503`.
 
 ---
 
-## Autenticación
+## Authentication
 
-Dos esquemas, **el mismo tenant**. Se despacha por el prefijo del header, nunca se prueba uno y se cae al otro: los dos leen el cuerpo, y un `Request` se consume una sola vez.
+Two schemes, **the same tenant**. Dispatched on the header prefix, never trying one and falling back to the other: both read the body, and a `Request` is consumed exactly once.
 
-| Ruta | Auth |
+| Route | Auth |
 |---|---|
-| `POST /api/auth/session` | NIP-98 **solamente** |
-| Toda la gestión, `mint` incluido | NIP-98 **o** Bearer |
-| `GET`/`POST /api/coupons/claim` | Ninguna — el nonce es la credencial |
-| `GET /api/coupons/manager` | Ninguna |
+| `POST /api/auth/session` | NIP-98 **only** |
+| All management, `mint` included | NIP-98 **or** Bearer |
+| `GET`/`POST /api/coupons/claim` | None — the nonce is the credential |
+| `GET /api/coupons/manager` | None |
 
 ### NIP-98
 
-Kind `27235` en `Authorization: Nostr <base64 del evento>`. Se verifica en este orden — barato primero, y la firma antes de confiar en cualquier tag:
+Kind `27235` in `Authorization: Nostr <base64 of the event>`. Verified in this order — cheap first, and the signature before trusting any tag:
 
-1. Forma del evento
+1. Event shape
 2. `kind === 27235`
-3. **Firma válida**
-4. `|ahora − created_at| ≤ 60s`
-5. Tag `method` coincide
-6. Tag `u` coincide con la URL externa (origen + path + query exactos)
-7. Tag `payload` = sha256 hex del cuerpo, cuando hay cuerpo
+3. **Valid signature**
+4. `|now − created_at| ≤ 60s`
+5. `method` tag matches
+6. `u` tag matches the external URL (origin + path + query, exactly)
+7. `payload` tag = sha256 hex of the body, when there is one
 
 ```jsonc
 {
@@ -91,36 +93,36 @@ Kind `27235` en `Authorization: Nostr <base64 del evento>`. Se verifica en este 
     ["u", "https://merchant.lacrypta.ar/api/coupons/mint"],
     ["method", "POST"],
     ["payload", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"],
-    ["nonce", "k3f9xq2"]                                    // ver abajo
+    ["nonce", "k3f9xq2"]                                    // see below
   ],
   "pubkey": "…", "id": "…", "sig": "…"
 }
 ```
 
-Con `NEXT_PUBLIC_APP_URL` seteada, ese es el **único** origen aceptado y los `x-forwarded-*` se ignoran, así que falsificarlos no sirve para ampliar la audiencia del token.
+With `NEXT_PUBLIC_APP_URL` set, that is the **only** origin accepted and the `x-forwarded-*` headers are ignored, so forging them does not widen the token's audience.
 
-Hay una caché de ids vistos en proceso (150 s) contra replay. Mismo alcance que el rate limit: sube el costo, no lo hace imposible, no se comparte entre instancias.
+There is an in-process cache of seen ids (150 s) against replay. Same scope as the rate limit: it raises the cost, it does not make it impossible, and it is not shared across instances.
 
-> **Si estás implementando un cliente:** el token tiene que llevar **algo que lo haga único**. Todo lo demás es determinístico y `created_at` tiene resolución de un segundo, así que dos emisiones del mismo cupón en el mismo segundo hashean al mismo id y la segunda se rechaza con `reason: "replay"`. Nuestro cliente agrega un tag `nonce` aleatorio; una caja que emite varios cupones por segundo tiene que hacer lo mismo.
+> **If you are implementing a client:** the token has to carry **something that makes it unique**. Everything else is deterministic and `created_at` has one-second resolution, so two mints of the same coupon in the same second hash to the same id and the second is rejected with `reason: "replay"`. Our client adds a random `nonce` tag; a till minting several coupons per second has to do the same.
 
 ### Bearer
 
-Firmás un NIP-98 una vez, recibís un JWT y lo usás para todo lo demás: `Authorization: Bearer <token>`.
+Sign a NIP-98 once, get a JWT, use it for everything else: `Authorization: Bearer <token>`.
 
-**No es una mejora de seguridad, es un intercambio.** NIP-98 ata cada token a un pubkey, una URL, un método, un hash de cuerpo, sesenta segundos y un solo uso. El bearer ata un pubkey y un vencimiento: robarlo da todo lo que ese pubkey puede hacer hasta que caduque. Lo que se compra a cambio es no pagar una firma por request, que en un bunker NIP-46 es un viaje al teléfono del comerciante por cada click.
+**It is not a security improvement, it is a trade.** NIP-98 binds each token to a pubkey, a URL, a method, a body hash, sixty seconds and a single use. The bearer binds a pubkey and an expiry: stealing it grants everything that pubkey can do until it lapses. What it buys is not paying a signature per request, which on a NIP-46 bunker is a round trip to the merchant's phone on every click.
 
-- **12 horas**, un turno. El navegador lo guarda en `sessionStorage`, así que además muere al cerrar la pestaña.
-- **Todas las rutas lo aceptan, emisión incluida.** Dejar `mint` sólo con NIP-98 no protegería nada: con el mismo bearer se llama a `POST /api/coupons/minters`, uno se agrega como emisor autorizado, y emite con su propia firma.
-- **No hay logout.** El token no tiene estado del lado del servidor, así que no hay nada que revocar: salir es soltarlo. Para invalidar todo ya, rotá `SESSION_JWT_SECRET`.
-- **Re-emitilo ante cualquier `401`.** Sin `SESSION_JWT_SECRET` la clave es aleatoria por proceso, así que un reinicio hace que los tokens vivos fallen como `session-invalid` y no como `session-expired`.
+- **12 hours**, one shift. The browser keeps it in `sessionStorage`, so it also dies when the tab closes.
+- **Every route accepts it, minting included.** Restricting `mint` to NIP-98 would protect nothing: with the same bearer you call `POST /api/coupons/minters`, add yourself as an authorized minter, and mint with your own signature.
+- **There is no logout.** The token has no server-side state, so there is nothing to revoke: signing out is dropping it. To invalidate everything right now, rotate `SESSION_JWT_SECRET`.
+- **Re-mint on any `401`.** Without `SESSION_JWT_SECRET` the key is random per process, so a restart makes live tokens fail as `session-invalid` rather than `session-expired`.
 
 ---
 
-## Tipos de retorno
+## Return types
 
 ### `Benefit`
 
-Lo que el cupón descuenta. Unión discriminada por `type`; los cinco aceptan `cap` opcional. La semántica está en [Descuentos](./cupones-descuentos.md).
+What the coupon takes off. A union discriminated by `type`; all five accept an optional `cap`. The semantics are in [Discounts](./cupones-descuentos.md).
 
 ```ts
 type Benefit = (
@@ -134,7 +136,7 @@ type Benefit = (
 type Currency = "ARS" | "USD" | "SAT"
 ```
 
-Uno de cada uno:
+One of each:
 
 ```jsonc
 { "type": "percent", "percent": 10 }
@@ -146,23 +148,23 @@ Uno de cada uno:
 { "type": "freeItems", "items": [{ "d": "aab1c0de-7f2c-4b8e-9d31-2c5f6a8b1e40", "qty": 2 }] }
 ```
 
-Las claves ausentes son significativas: `productDs` ausente es **todos los productos**, `cap` ausente es **sin tope**. Nunca se mandan como `null`.
+Absent keys are meaningful: an absent `productDs` means **all products**, an absent `cap` means **no ceiling**. They are never sent as `null`.
 
 ### `DefinitionJson`
 
-Un cupón como lo ve la página de gestión. Lo devuelven `GET /api/coupons`, `POST /api/coupons` y `PATCH /api/coupons/{id}`.
+A coupon as the management page sees it. Returned by `GET /api/coupons`, `POST /api/coupons` and `PATCH /api/coupons/{id}`.
 
 ```ts
 interface DefinitionJson {
   id: string            // uuid
   name: string          // 1..80
-  description: string   // "" cuando no tiene
+  description: string   // "" when it has none
   image: string | null  // https
   benefit: Benefit | null
-  maxUses: number | null    // null ⇒ sin límite
-  minted: number            // emisiones vigentes; anular una lo baja, y devuelve el lugar
-  claimed: number           // canjeados
-  expiresAt: number | null  // unix SEGUNDOS
+  maxUses: number | null    // null ⇒ unlimited
+  minted: number            // live mints; voiding one lowers it and gives the slot back
+  claimed: number           // redeemed
+  expiresAt: number | null  // unix SECONDS
   archivedAt: number | null
   createdAt: number
   updatedAt: number
@@ -190,19 +192,19 @@ interface DefinitionJson {
 }
 ```
 
-> **`benefit: null` no es un error de la API, es un cupón roto.** Una definición cuyas columnas ya no parsean —una base editada a mano, una versión futura que escribió una forma que no conocemos— es una cosa real que puede pasar. Esconderla dejaría al comerciante con un cupón que no puede ver, editar ni borrar; mostrarla rota lo deja arreglarlo. `POST /api/coupons/mint` **no la emite**: responde `503`.
+> **`benefit: null` is not an API error, it is a broken coupon.** A definition whose columns no longer parse — a hand-edited database, a future version that wrote a shape we do not know — is a real thing that can happen. Hiding it would leave the merchant with a coupon they can neither see, edit nor delete; showing it broken lets them fix it. `POST /api/coupons/mint` **will not issue it**: it answers `503`.
 
 ### `MintJson`
 
-Una emisión. La devuelven `GET /api/coupons/{id}/mints` y `DELETE …/mints/{nonce}`.
+One issuance. Returned by `GET /api/coupons/{id}/mints` and `DELETE …/mints/{nonce}`.
 
 ```ts
 interface MintJson {
-  nonce: string     // 22 chars base64url — el token al portador
+  nonce: string     // 22 chars base64url — the bearer token
   status: "minted" | "claimed" | "voided"
-  mintedBy: string      // hex de quien emitió
+  mintedBy: string      // hex of whoever minted it
   mintedByNpub: string
-  mintedAt: number      // unix segundos
+  mintedAt: number      // unix seconds
   claimedAt: number | null
   voidedAt: number | null
 }
@@ -222,13 +224,13 @@ interface MintJson {
 
 ### `MinterJson`
 
-Un npub autorizado a emitir.
+An npub authorized to mint.
 
 ```ts
 interface MinterJson {
-  pubkey: string        // hex, siempre minúscula
+  pubkey: string        // hex, always lowercase
   npub: string
-  label: string | null  // hasta 80 chars
+  label: string | null  // up to 80 chars
   createdAt: number
 }
 ```
@@ -244,7 +246,7 @@ interface MinterJson {
 
 ### `RedemptionJson`
 
-Un canje, con la orden que pagó. Lo devuelve `GET /api/coupons/redemptions`.
+A redemption, with the order it paid for. Returned by `GET /api/coupons/redemptions`.
 
 ```ts
 interface RedemptionJson {
@@ -252,10 +254,10 @@ interface RedemptionJson {
   claimedAt: number
   couponId: string
   name: string
-  benefit: Benefit | null   // el snapshot congelado al emitir
-  order: SignedEvent | null // el kind-9734 firmado, verbatim
-  orderId: string | null    // order.id, para indexar
-  amountMsat: number | null // 0 ⇒ reclamada, nunca va a tener recibo
+  benefit: Benefit | null   // the snapshot frozen at mint time
+  order: SignedEvent | null // the signed kind-9734, verbatim
+  orderId: string | null    // order.id, for indexing
+  amountMsat: number | null // 0 ⇒ reclaimed, will never have a receipt
 }
 ```
 
@@ -291,19 +293,19 @@ interface RedemptionJson {
 }
 ```
 
-`order: null` es normal, no un error: un cupón escaneado en el mostrador nunca pasó por un checkout, y tampoco lo hizo nada canjeado antes de que la app archivara órdenes.
+`order: null` is normal, not an error: a coupon scanned at a counter never went through a checkout, and neither did anything redeemed before the app started filing orders.
 
 ### `CouponPayloadJson`
 
-Lo que se le entrega a quien tiene el cupón. Es la base de las respuestas de emisión y canje.
+What is handed to whoever holds the coupon. It is the base of the mint and claim responses.
 
 ```ts
 interface CouponPayloadJson {
   couponId: string
-  coupon: Benefit    // el snapshot del MINT, no las columnas actuales
+  coupon: Benefit    // the MINT's snapshot, not the current columns
   name: string
   description: string
-  npub: string       // el DUEÑO — contra este se chequea que el cupón sea de esta tienda
+  npub: string       // the OWNER — check this to know the coupon is for this shop
   image: string | null
   nonce: string
   expiresAt: number | null
@@ -312,7 +314,7 @@ interface CouponPayloadJson {
 
 ### `SignedEvent`
 
-Un evento de nostr, tal cual. Aparece como `voucher`, como `discovery` y como `order`.
+A nostr event, as-is. It shows up as `voucher`, as `discovery` and as `order`.
 
 ```ts
 interface SignedEvent {
@@ -327,7 +329,7 @@ interface SignedEvent {
 
 ### `POST /api/auth/session`
 
-Cambia una firma NIP-98 por un bearer de 12 h. **Sin cuerpo** — el evento ya ata `u` y `method`, y hashear un cuerpo no defiende de ningún replay: quien puede repetir el header puede repetir los bytes.
+Trades a NIP-98 signature for a 12 h bearer. **No body** — the event already binds `u` and `method`, and hashing a body defends against no replay at all: whoever can repeat the header can repeat the bytes underneath it.
 
 ```bash
 curl -X POST https://merchant.lacrypta.ar/api/auth/session \
@@ -342,21 +344,21 @@ curl -X POST https://merchant.lacrypta.ar/api/auth/session \
 }
 ```
 
-`pubkey` y `expiresAt` vienen ecos para que **el cliente nunca decodifique el token**: apenas alguien lee un claim, alguien empieza a confiar en uno, y el browser no puede verificar la firma que lo haría verdad.
+`pubkey` and `expiresAt` are echoed so **the client never decodes the token**: the moment somebody reads a claim, somebody starts trusting one, and the browser cannot check the signature that would make it true.
 
-`200`, no `201`: después no existe ningún recurso direccionable.
+`200`, not `201`: no addressable resource exists afterwards.
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `400` | Mandaste cuerpo |
-| `401` + `reason` | NIP-98 inválido |
+| `400` | You sent a body |
+| `401` + `reason` | Invalid NIP-98 |
 | `429` | 20/min |
 
 ---
 
 ### `GET /api/coupons`
 
-Cupones + emisores + anuncio, en una sola llamada. **No es pereza:** cada request cuesta una firma, y en un bunker NIP-46 cada firma es un viaje al teléfono del comerciante. Dos endpoints serían dos toques para abrir una página.
+Coupons + minters + announcement, in one call. **That is not laziness:** every request costs a signature, and on a NIP-46 bunker every signature is a round trip to the merchant's phone. Two endpoints would mean two taps to open one page.
 
 ```bash
 curl https://merchant.lacrypta.ar/api/coupons -H "Authorization: Bearer $TOKEN"
@@ -364,81 +366,81 @@ curl https://merchant.lacrypta.ar/api/coupons -H "Authorization: Bearer $TOKEN"
 
 ```jsonc
 {
-  "coupons": [ /* DefinitionJson[], más nuevo primero, archivados incluidos */ ],
+  "coupons": [ /* DefinitionJson[], newest first, archived included */ ],
   "minters": [ /* MinterJson[] */ ],
-  "discovery": { /* SignedEvent kind 30078 */ }   // null si nunca se activó
+  "discovery": { /* SignedEvent kind 30078 */ }   // null if never activated
 }
 ```
 
-Los archivados vienen incluidos: el comerciante necesita ver que un cupón retirado todavía tiene 12 instancias sin canjear en la calle.
+Archived ones are included: the merchant needs to see that a retired coupon still has 12 unclaimed instances out in the world.
 
 ---
 
 ### `POST /api/coupons`
 
-Crea una definición.
+Creates a definition.
 
 ```jsonc
 {
-  "name": "20% de verano",                    // requerido, 1..80
-  "description": "No acumulable.",            // opcional, hasta 500
-  "image": "https://blossom.example/9f3c.webp", // opcional, https o null
+  "name": "20% de verano",                    // required, 1..80
+  "description": "No acumulable.",            // optional, up to 500
+  "image": "https://blossom.example/9f3c.webp", // optional, https or null
   "benefit": { "type": "percent", "percent": 20,
-               "cap": { "amount": 5000, "currency": "ARS" } },  // requerido
-  "maxUses": 100,                             // opcional, null ⇒ sin límite
-  "expiresAt": 1764633600                     // opcional, unix SEGUNDOS, futuro
+               "cap": { "amount": 5000, "currency": "ARS" } },  // required
+  "maxUses": 100,                             // optional, null ⇒ unlimited
+  "expiresAt": 1764633600                     // optional, unix SECONDS, in the future
 }
 ```
 
-**`201`** con `{ "coupon": DefinitionJson }`.
+**`201`** with `{ "coupon": DefinitionJson }`.
 
-| Error | Mensaje |
+| Error | Message |
 |---|---|
 | `400` | `Poné un nombre de hasta 80 caracteres.` |
 | `400` | `La descripción puede tener hasta 500 caracteres.` |
 | `400` | `La imagen tiene que ser una URL https.` |
-| `400` | `El cupón no es válido: <razón>.` — la razón viene de `parseBenefit` |
+| `400` | `El cupón no es válido: <reason>.` — the reason comes from `parseBenefit` |
 | `400` | `El máximo de usos no es válido.` |
 | `400` | `La fecha de vencimiento no es válida.` / `…ya pasó.` |
 
-La imagen se valida como en `woo-config.ts`, y por el mismo motivo: esa string termina en el `<img src>` de otra persona. https, sin credenciales embebidas, con hostname real.
+The image is validated the way `woo-config.ts` does, and for the same reason: that string ends up in somebody else's `<img src>`. https, no embedded credentials, a real hostname.
 
-**En `POST` la fecha tiene que ser futura; en `PATCH` no.** Una fecha pasada es el matainterruptor de los cupones ya emitidos, y sólo tiene sentido sobre un cupón que existe.
+**On `POST` the date must be in the future; on `PATCH` it need not be.** A past date is the kill switch for coupons already issued, and only makes sense on a coupon that exists.
 
 ---
 
 ### `PATCH /api/coupons/{id}`
 
-Edita. Todos los campos son opcionales; sólo se toca lo que mandás. Un cuerpo vacío es `400` (`No hay nada para cambiar.`).
+Edits. Every field is optional; only what you send is touched. An empty body is `400` (`No hay nada para cambiar.`).
 
 ```jsonc
 {
   "name": "20% de verano",
   "description": "…",
-  "image": null,              // null borra la imagen
+  "image": null,              // null clears the image
   "benefit": { … },
-  "maxUses": null,            // null quita el límite
-  "expiresAt": 1735689600,    // una fecha PASADA mata los que están en la calle
-  "archived": true            // frena las emisiones nuevas, no los canjes
+  "maxUses": null,            // null removes the limit
+  "expiresAt": 1735689600,    // a PAST date kills the ones already out there
+  "archived": true            // stops new mints, not redemptions
 }
 ```
 
-`200` con `{ "coupon": DefinitionJson }`, con los contadores re-leídos para que la fila del cliente quede completa y no a medio refrescar.
+`200` with `{ "coupon": DefinitionJson }`, counters re-read so the client's row comes back complete rather than half-fresh.
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `404` | No existe **o es de otro** — a un desconocido probando UUIDs se le contesta lo mismo en los dos casos |
-| `400` | Igual que `POST`, más `No hay nada para cambiar.` |
+| `404` | Does not exist **or belongs to somebody else** — a stranger probing UUIDs gets the same answer either way |
+| `400` | Same as `POST`, plus `No hay nada para cambiar.` |
 
-Bajar `maxUses` por debajo de lo ya emitido **está permitido**: frena las emisiones nuevas sin tocar los cupones ya entregados.
+Lowering `maxUses` below what has already been minted **is allowed**: it stops further minting without touching coupons already handed out.
 
-> Editar la definición **no cambia** lo que promete un cupón ya emitido. El voucher se firmó sobre el snapshot congelado en `coupon_mints.benefit`.
+> Editing the definition **does not change** what an already-minted coupon promises. The voucher was signed over the snapshot frozen in `coupon_mints.benefit`.
 
 ---
 
 ### `DELETE /api/coupons/{id}`
 
-Borra si nunca se emitió; si no, archiva. Una definición con cupones en circulación no se puede borrar: los nonces en los teléfonos apuntan a ella y todavía se les debe algo.
+Deletes if nothing was ever minted; archives otherwise. A definition with coupons in circulation cannot be deleted: the nonces in people's phones point at it, and they are still owed.
 
 ```json
 { "deleted": false, "archived": true }
@@ -448,51 +450,51 @@ Borra si nunca se emitió; si no, archiva. Una definición con cupones en circul
 
 ### `GET /api/coupons/{id}/mints`
 
-Las emisiones de un cupón, más nueva primero.
+The issuances of one coupon, newest first.
 
 ```json
 { "mints": [ /* MintJson[] */ ] }
 ```
 
-Endpoint aparte de `GET /api/coupons` a propósito: la lista de definiciones es con lo que abre la página y es chica; esto puede ser cientos de filas para un cupón que se repartió todo el mes, así que carga cuando el comerciante realmente lo pide.
+A separate endpoint from `GET /api/coupons` on purpose: the list of definitions is what the page opens with and it is small; this can be hundreds of rows for a coupon that has been handed out all month, so it loads when the merchant actually asks for it.
 
 ---
 
 ### `DELETE /api/coupons/{id}/mints/{nonce}`
 
-Anula una emisión que nunca se canjeó. `200` con `{ "mint": MintJson }` — la fila vuelve con `status: "voided"`.
+Voids an issuance that was never redeemed. `200` with `{ "mint": MintJson }` — the row comes back with `status: "voided"`.
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `404` | No existe esa emisión, o el cupón es de otro |
+| `404` | No such issuance, or the coupon belongs to somebody else |
 | `409` | `Ese cupón ya fue canjeado, no se puede anular.` |
 | `409` | `Ese cupón ya estaba anulado.` |
 
-Está anidado bajo la definición para que la propiedad venga del path: el nonce solo es un token al portador, y un endpoint que actuara sobre él sin chequear de quién es el cupón dejaría a cualquiera anular emisiones ajenas.
+It is nested under the definition so ownership comes from the path: the nonce alone is a bearer token, and an endpoint that acted on it without checking who owns the coupon would let anyone void anyone's issuance.
 
-**La fila sobrevive.** Una caja que escanea un QR anulado tiene que enterarse de que fue anulado; una fila borrada sólo podría contestar "no existe", que manda al cajero a buscar un error de tipeo que no existe.
+**The row survives.** A till that scans a cancelled QR has to be told it was cancelled; a deleted row could only answer "does not exist", which sends the cashier looking for a typo that is not there.
 
-**Devuelve el lugar al máximo.** Quien se equivoca y toca "Emitir" en un cupón de un solo uso tendría que ir a editar el cupón para poder reemitirlo, y "esta emisión nunca pasó" es exactamente lo que significa anular.
+**It gives the slot back to the cap.** Whoever misclicks "Emitir" on a single-use coupon would otherwise have to go edit the coupon to issue it again, and "this issuance never happened" is exactly what voiding means.
 
 ---
 
 ### `GET /api/coupons/redemptions`
 
-Todos los canjes del comerciante, con la orden que pagó cada uno. Más nuevo primero, **tope de 500**.
+Every redemption for this merchant, with the order each one paid for. Newest first, **capped at 500**.
 
 ```json
 { "redemptions": [ /* RedemptionJson[] */ ] }
 ```
 
-Es lo más parecido a una tabla de órdenes que hay en la app. Una compra pagada se sigue reconstruyendo de su zap receipt en los relays — pero una que un cupón dejó en cero nunca se factura, nunca se recibe y no existiría en ningún lado. La fila escrita al canjear es su único registro.
+This is the closest thing to an orders table in the app. A paid purchase is still reconstructed from its zap receipt on the relays — but one a coupon took to zero is never invoiced, never receipted, and would exist nowhere. The row written at claim time is its only record.
 
-Endpoint propio y no un campo de `GET /api/coupons`: esa respuesta es con lo que abre la página, y colgarle un evento firmado por canje la haría crecer con las ventas del comercio.
+Its own endpoint rather than a field on `GET /api/coupons`: that response is what the page opens with, and stapling a signed event per redemption to it would make it grow with the merchant's sales.
 
 ---
 
 ### `POST /api/coupons/mint`
 
-**Emitir.** Es la `mintUrl` del anuncio. Dos puertas: firma válida, y que quien firma sea el dueño o esté en la lista de emisores.
+**Mint.** This is the `mintUrl` from the announcement. Two gates: a valid signature, and the signer being either the owner or somebody on the minters list.
 
 ```json
 { "couponId": "55b5ee4f-4dcc-4a6a-a58e-6d1d94d811a3" }
@@ -509,28 +511,28 @@ Endpoint propio y no un campo de `GET /api/coupons`: esa respuesta es con lo que
   "image":       "https://blossom.example/9f3c.webp",
   "nonce":       "hcLPDzERvvHzS4Vn0OLbAQ",
   "expiresAt":   1764633600,
-  "voucher":     { /* SignedEvent kind 20402, fase "minted" */ }
+  "voucher":     { /* SignedEvent kind 20402, phase "minted" */ }
 }
 ```
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `400` | `Falta el cupón.` — `couponId` no es un uuid |
+| `400` | `Falta el cupón.` — `couponId` is not a uuid |
 | `403` | `No estás autorizado a emitir este cupón.` |
-| `404` | No existe |
+| `404` | Does not exist |
 | `409` | `Se agotaron los cupones disponibles.` |
 | `410` | `El cupón fue archivado.` / `El cupón está vencido.` |
-| `503` | Sin base, sin manager, o la definición no parsea |
+| `503` | No database, no manager, or the definition does not parse |
 
-**El nonce son 16 bytes al azar en base64url (22 caracteres):** imposible de adivinar y entra en cualquier QR. **Es un token al portador** — quien lo tiene puede canjear. Existe sólo en esta respuesta y en la base, no se loguea, y la respuesta no se cachea.
+**The nonce is 16 random bytes in base64url (22 characters):** unguessable and it fits in any QR. **It is a bearer token** — whoever holds it can redeem. It exists only in this response and in the database, it is never logged, and the response is never cached.
 
-El cap de emisiones se sostiene con el `UPDATE … WHERE minted_count < max_uses` que incrementa el contador. Contar filas en `coupon_mints` sería una carrera.
+The mint cap holds via the `UPDATE … WHERE minted_count < max_uses` that increments the counter. Counting rows in `coupon_mints` would be a race.
 
 ---
 
 ### `GET /api/coupons/claim?nonce=…`
 
-**Consulta sin consumir.** Es la mitad de la `claimUrl`. Nuestra propia tienda la llama apenas alguien pega un código, para mostrar el descuento antes de gastar nada.
+**Checks without consuming.** This is half of the `claimUrl`. Our own storefront calls it the moment somebody pastes a code, so it can show the discount before anything is spent.
 
 ```bash
 curl "https://merchant.lacrypta.ar/api/coupons/claim?nonce=hcLPDzERvvHzS4Vn0OLbAQ"
@@ -551,76 +553,76 @@ curl "https://merchant.lacrypta.ar/api/coupons/claim?nonce=hcLPDzERvvHzS4Vn0OLbA
 }
 ```
 
-**Siempre `200` para un nonce que conocemos**, con el motivo en `status`. Es un endpoint de previsualización: un error HTTP haría que "ya usado" y "vencido" se vean igual que una falla de red, y el cajero no sabría cuál de las tres cosas pasó.
+**Always `200` for a nonce we recognize**, with the reason in `status`. This is a preview endpoint: an HTTP error would make "already used" and "expired" look exactly like a network fault, and the cashier would not know which of the three happened.
 
-`voided` le gana a `expired`: que el comerciante haya anulado una emisión es una decisión, y decir "vencido" lo mandaría a cambiar una fecha que no tiene nada que ver.
+`voided` outranks `expired`: a merchant cancelling an issuance is a decision, and saying "expired" would send them to change a date that has nothing to do with it.
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `400` | `Falta el cupón.` — sin `nonce` o con formato inválido |
+| `400` | `Falta el cupón.` — no `nonce`, or a malformed one |
 | `404` | `Cupón inexistente.` |
 
-> **Un despliegue sirve a muchos comercios**, y este endpoint contesta por cualquier nonce que conozca — tiene que hacerlo, porque un POS validando no tiene contexto de tienda. Si sos una tienda, **chequeá `npub` contra el comercio que estás cobrando**; sin eso, alguien lleva un 50% de un local a otro.
+> **One deployment serves many shops**, and this endpoint answers for any nonce it knows — it has to, because a POS validating a code has no storefront context. If you are a storefront, **check `npub` against the merchant you are charging**; without that, somebody carries a 50%-off from one shop to another.
 
 ---
 
 ### `POST /api/coupons/claim`
 
-**Canjea.** Consume el nonce, una sola vez.
+**Redeems.** Consumes the nonce, once.
 
 ```jsonc
 {
-  "nonce": "hcLPDzERvvHzS4Vn0OLbAQ",   // requerido
-  "zapRequest": { /* kind 9734 firmado */ },  // opcional
-  "amountMsat": 0                             // opcional, entero ≥ 0
+  "nonce": "hcLPDzERvvHzS4Vn0OLbAQ",   // required
+  "zapRequest": { /* signed kind 9734 */ },   // optional
+  "amountMsat": 0                             // optional, integer ≥ 0
 }
 ```
 
-`zapRequest` y `amountMsat` describen **qué se está comprando** y se guardan en la fila del canje. Son el único registro que existe de un pedido reclamado, y lo que hace que la venta aparezca en `/admin/orders`. `amountMsat: 0` es lo que marca "reclamada": distingue *nunca va a tener recibo* de *todavía no llegó*.
+`zapRequest` and `amountMsat` describe **what is being bought** and are stored on the redemption row. They are the only record a reclaimed order has, and what makes the sale show up in `/admin/orders`. `amountMsat: 0` is what marks it "reclaimed": it distinguishes *will never have a receipt* from *has not arrived yet*.
 
-Para archivarse, el evento tiene que: verificar su firma, ser `kind 9734`, traer un tag `coupon` y pesar menos de 8000 caracteres. Si no cumple, **el canje se hace igual** y se pierde nada más que el registro: negarle el cupón a alguien parado en el mostrador porque no pudimos archivar el papeleo es el peor resultado posible.
+To be filed, the event must verify its signature, be `kind 9734`, carry a `coupon` tag and weigh under 8000 characters. If it does not, **the redemption still happens** and all that is lost is the record: refusing a coupon to somebody standing at the counter because we could not file the paperwork is the worst possible outcome.
 
 ```jsonc
 {
-  "status": "success",         // o "claimed"
+  "status": "success",         // or "claimed"
   "claimedAt": 1762045200,
   "couponId": "…", "coupon": { … }, "name": "…", "description": "…",
   "npub": "…", "image": null, "nonce": "…", "expiresAt": null,
-  "voucher": { /* SignedEvent kind 20402, fase "claimed" */ }
+  "voucher": { /* SignedEvent kind 20402, phase "claimed" */ }
 }
 ```
 
-| Status | Significa |
+| Status | Means |
 |---|---|
-| `200` `success` | Recién canjeado |
-| `200` `claimed` | Ya estaba canjeado, con el `claimedAt` **original** |
+| `200` `success` | Just redeemed |
+| `200` `claimed` | Already redeemed, with the **original** `claimedAt` |
 
-**Que "ya canjeado" sea `200` y no un error es a propósito:** un POS que perdió la respuesta reintenta, y comparando `claimedAt` con su propio reloj sabe si el canje fue suyo. Un error colapsaría "lo canjeé yo" y "me ganaron de mano" en "el request falló".
+**"Already redeemed" being `200` and not an error is deliberate:** a POS that lost our response retries, and by comparing `claimedAt` against its own clock it knows whether the redemption was its own. An error would collapse "I redeemed this" and "somebody beat me to it" into "the request failed".
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
 | `400` | `Falta el cupón.` / `Cuerpo inválido.` |
 | `404` | `Cupón inexistente.` |
 | `410` | `El cupón fue anulado.` / `El cupón está vencido.` |
 
-La concurrencia la decide la base, no este proceso:
+Concurrency is decided by the database, not by this process:
 
 ```sql
 UPDATE coupon_mints SET status='claimed', claimed_at=now(),
        order_event = $2, order_id = $3, amount_msat = $4
- WHERE nonce = $1 AND status = 'minted' AND EXISTS (… no vencido …)
+ WHERE nonce = $1 AND status = 'minted' AND EXISTS (… not expired …)
 RETURNING *;
 ```
 
-Dos cajas escaneando el mismo QR en el mismo instante producen un UPDATE que devuelve fila y otro que no; el segundo se reporta como ya canjeado. Un read-then-write sería una carrera con plata del otro lado.
+Two tills scanning the same QR at the same instant produce one UPDATE that returns a row and one that does not; the second is reported as already claimed. A read-then-write would be a race with money on the other side of it.
 
-**La orden viaja en ese mismo UPDATE**: una fila no puede quedar canjeada sin la orden que la canjeó, y el segundo llamador —que por definición perdió la carrera— no puede pisar la orden del primero con la suya.
+**The order rides in that same UPDATE**: a row cannot end up claimed without the order that claimed it, and the second caller — who by definition lost the race — cannot overwrite the winner's order with their own.
 
 ---
 
 ### `GET /api/coupons/mintable`
 
-Qué puede emitir el npub que pregunta, de todos los comerciantes que lo autorizaron. Es con lo que un POS dibuja sus botones.
+What the asking npub is allowed to mint, across every merchant that authorized them. This is what a POS draws its buttons from.
 
 ```jsonc
 {
@@ -632,71 +634,71 @@ Qué puede emitir el npub que pregunta, de todos los comerciantes que lo autoriz
       "image": "https://blossom.example/9f3c.webp",
       "coupon": { "type": "percent", "percent": 20, "cap": { "amount": 5000, "currency": "ARS" } },
       "npub": "npub19tv378w29hx4ljy7wgydreg9nu96czrs6clu8wkzr3af8z86rr7sujx4xe",
-      "remaining": 88,        // null ⇒ sin límite
+      "remaining": 88,        // null ⇒ unlimited
       "expiresAt": 1764633600
     }
   ]
 }
 ```
 
-Los archivados, vencidos y agotados se filtran **del lado del servidor**: una terminal que muestra una opción que siempre falla es peor que una que no la muestra. Los que no parsean también se omiten — de una definición cuyos términos no podemos enunciar no se puede ofrecer nada.
+Archived, expired and exhausted ones are filtered **server-side**: a terminal showing an option that always fails is worse than one that does not show it. Ones that do not parse are dropped too — a definition whose terms we cannot state is not offerable.
 
 ---
 
 ### `GET` / `POST /api/coupons/minters`, `DELETE /api/coupons/minters/{pubkey}`
 
-Los npubs autorizados a emitir: el teléfono de un cajero, una segunda terminal, un local socio con su propio POS.
+The npubs allowed to mint: a cashier's phone, a second terminal, a partner shop running its own POS.
 
-`GET` → `{ "minters": MinterJson[] }`. Existe por simetría y para un POS que quiera mostrar la lista; la página de gestión los recibe en `GET /api/coupons`, en el mismo viaje.
+`GET` → `{ "minters": MinterJson[] }`. It exists for symmetry and for a POS that wants to show the list; the management page gets them from `GET /api/coupons`, in the same round trip.
 
-`POST` acepta **npub, nprofile, hex o una dirección NIP-05**:
+`POST` accepts **npub, nprofile, hex or a NIP-05 address**:
 
 ```json
 { "pubkey": "caja2@lacrypta.ar", "label": "Caja 2" }
 ```
 
-**`201`** con `{ "minter": MinterJson }`. Sólo se guarda el hex: la dirección se resuelve una vez, acá, y nunca se sigue después.
+**`201`** with `{ "minter": MinterJson }`. Only the hex is stored: the address is resolved once, here, and never followed again.
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `400` | `Ya podés emitir tus propios cupones.` — el dueño no es fila de su propia lista |
-| `400` / `404` | La clave o la dirección no resuelven |
+| `400` | `Ya podés emitir tus propios cupones.` — the owner is never a row on their own list |
+| `400` / `404` | The key or the address does not resolve |
 
-`DELETE /api/coupons/minters/{pubkey}` (npub o hex, url-encoded) → `{ "removed": true }`, o `404` si no estaba.
+`DELETE /api/coupons/minters/{pubkey}` (npub or hex, url-encoded) → `{ "removed": true }`, or `404` if it was not there.
 
-**Revocar no toca lo ya emitido.** Esos cupones se entregaron a clientes que no tuvieron nada que ver; revocar frena las emisiones nuevas, que es lo que significa "sacar a este empleado".
+**Revoking does not touch what was already minted.** Those coupons went to customers who had nothing to do with this; revoking stops further issuance, which is what "remove this employee" means.
 
 ---
 
 ### `PUT /api/coupons/discovery`
 
-Guarda el anuncio 30078 que el comerciante firmó.
+Stores the 30078 announcement the merchant signed.
 
 ```json
 { "event": { "kind": 30078, "…": "…" } }
 ```
 
-`200` con `{ "event": SignedEvent }`.
+`200` with `{ "event": SignedEvent }`.
 
-**Guardamos el evento, no lo acuñamos.** La firma es del comerciante y este servicio no podría falsificarla; todo lo que hace este endpoint es recordar lo que ya firmaron, para poder re-publicarlo después sin volver a pedírselo.
+**We store the event, we do not mint it.** The signature is the merchant's and this service could not forge one; all this endpoint does is remember what they already signed, so it can be re-broadcast later without asking them again.
 
-Se valida todo porque el llamador controla todo, y una fila mala acá se re-publicaría a los relays a nombre del comerciante:
+Everything is validated because the caller controls everything, and a bad row here would be re-broadcast to relays under the merchant's name:
 
-| Error | Cuándo |
+| Error | When |
 |---|---|
-| `400` | `Cuerpo inválido.` — forma del evento |
-| `400` | `Ese evento no es tu anuncio de cupones.` — `d` o `pubkey` no coinciden |
+| `400` | `Cuerpo inválido.` — event shape |
+| `400` | `Ese evento no es tu anuncio de cupones.` — `d` or `pubkey` do not match |
 | `400` | `El evento no tiene una fecha válida.` |
 | `400` | `La firma del evento no es válida.` |
-| `400` | `El anuncio no se puede leer: <razón>.` |
+| `400` | `El anuncio no se puede leer: <reason>.` |
 
-Leerlo de vuelta **no está acá**: viaja con `GET /api/coupons`, así que la página cuesta una firma en vez de dos.
+Reading it back is **not here**: it rides along with `GET /api/coupons`, so the page costs one signature instead of two.
 
 ---
 
 ### `GET /api/coupons/manager`
 
-El pubkey que firma los vouchers. Sin auth — es información pública y un POS la necesita para verificar.
+The pubkey that signs the vouchers. No auth — it is public information and a POS needs it to verify.
 
 ```json
 {
@@ -705,33 +707,33 @@ El pubkey que firma los vouchers. Sin auth — es información pública y un POS
 }
 ```
 
-Única ruta cacheable: `public, max-age=300`. La clave es estable durante la vida del despliegue; el TTL corto es sólo para que setear la variable por primera vez se note pronto.
+The only cacheable route: `public, max-age=300`. The key is stable for the life of the deployment; the short TTL only makes setting the variable for the first time show up promptly.
 
-`503` si el servidor no tiene `COUPON_MANAGER_NSEC`.
+`503` if the server has no `COUPON_MANAGER_NSEC`.
 
 ---
 
-## Catálogo de errores
+## Error catalog
 
-| Código | Significa | Qué hacer |
+| Code | Means | What to do |
 |---|---|---|
-| `400` | Cuerpo o parámetro inválido | Arreglar el pedido. El mensaje dice qué |
-| `401` | Auth inválida (ver `reason`) | Re-firmar. Con `session-*`, re-emitir la sesión |
-| `403` | Autenticado pero sin permiso para emitir | Pedirle al dueño que te autorice |
-| `404` | No existe **o es de otro** | No reintentar |
-| `409` | Conflicto de estado: agotado, ya canjeado, ya anulado | No reintentar |
-| `410` | Terminal: vencido o archivado | No reintentar |
-| `413` | Cuerpo > 16 KB | No es nuestro caso de uso |
-| `429` | Rate limit | Esperar `retryAfter` segundos |
-| `503` | Sin base, sin manager, o error de la base | Reintentar con backoff |
+| `400` | Invalid body or parameter | Fix the request. The message says what |
+| `401` | Invalid auth (see `reason`) | Re-sign. On `session-*`, re-mint the session |
+| `403` | Authenticated but not allowed to mint | Ask the owner to authorize you |
+| `404` | Does not exist **or belongs to somebody else** | Do not retry |
+| `409` | State conflict: exhausted, already claimed, already voided | Do not retry |
+| `410` | Terminal: expired or archived | Do not retry |
+| `413` | Body over 16 KB | Not our use case |
+| `429` | Rate limit | Wait `retryAfter` seconds |
+| `503` | No database, no manager, or a database error | Retry with backoff |
 
-`404` para "es de otro" es deliberado: a un desconocido probando UUIDs, "no existe" y "no es tuyo" tienen que verse igual.
+`404` for "belongs to somebody else" is deliberate: to a stranger probing UUIDs, "does not exist" and "not yours" have to look the same.
 
 ---
 
-## Cliente de ejemplo
+## Example client
 
-Node ≥ 20, con `nostr-tools`. Emite un cupón y lo canjea, firmando NIP-98 a mano.
+Node ≥ 20, with `nostr-tools`. Mints a coupon and redeems it, signing NIP-98 by hand.
 
 ```js
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
@@ -739,14 +741,14 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js"
 
 const BASE = "https://merchant.lacrypta.ar"
-const sk = /* tu clave secreta, 32 bytes */
+const sk = /* your secret key, 32 bytes */
 
 function nip98(url, method, body) {
   const tags = [
     ["u", url],
     ["method", method],
-    // Sin esto, dos pedidos idénticos en el mismo segundo hashean al mismo
-    // id y el segundo se rechaza con reason: "replay".
+    // Without this, two identical requests in the same second hash to the same
+    // id and the second is rejected with reason: "replay".
     ["nonce", Math.random().toString(36).slice(2)],
   ]
   if (body) tags.push(["payload", bytesToHex(sha256(utf8ToBytes(body)))])
@@ -773,7 +775,7 @@ async function call(path, method = "GET", payload) {
   return json
 }
 
-// 1. Crear una definición.
+// 1. Create a definition.
 const { coupon } = await call("/api/coupons", "POST", {
   name: "20% de verano",
   description: "No acumulable.",
@@ -783,15 +785,15 @@ const { coupon } = await call("/api/coupons", "POST", {
   expiresAt: null,
 })
 
-// 2. Emitir una instancia. El nonce es lo que va al QR.
+// 2. Mint one instance. The nonce is what goes in the QR.
 const minted = await call("/api/coupons/mint", "POST", { couponId: coupon.id })
 console.log(minted.nonce, minted.voucher.pubkey)
 
-// 3. Consultar sin consumir — sin auth.
+// 3. Check without consuming — no auth.
 const check = await (await fetch(`${BASE}/api/coupons/claim?nonce=${minted.nonce}`)).json()
 console.log(check.status)        // "minted"
 
-// 4. Canjear. Sin auth: el nonce ES la credencial.
+// 4. Redeem. No auth: the nonce IS the credential.
 const claimed = await (
   await fetch(`${BASE}/api/coupons/claim`, {
     method: "POST",
@@ -802,9 +804,9 @@ const claimed = await (
 console.log(claimed.status)      // "success"
 ```
 
-Para cambiar la firma por una sesión, reemplazá el header de `call`:
+To trade the signature for a session, replace the header in `call`:
 
 ```js
 const { token } = await call("/api/auth/session", "POST")
-// después: headers: { authorization: `Bearer ${token}` }
+// then: headers: { authorization: `Bearer ${token}` }
 ```

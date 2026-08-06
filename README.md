@@ -1,24 +1,24 @@
 # Merchant Manager
 
-Panel para que un comercio administre su catálogo y lo publique en **nostr**, firmado con su propia clave. Cualquier punto de venta lo lee en vivo.
+A dashboard for a merchant to manage their catalog and publish it on **nostr**, signed with their own key. Any point of sale reads it live.
 
-Hecho por [La Crypta](https://lacrypta.ar).
+Built by [La Crypta](https://lacrypta.ar).
 
-## El problema que resuelve
+## The problem it solves
 
-Hoy el catálogo de La Crypta es **un archivo JSON copiado a mano entre tres repos**:
+Today La Crypta's catalog is **a JSON file copied by hand across three repos**:
 
-- `lawalletio/mobile-pos` (LaPOS, el POS que se usa en los eventos) lo tiene hardcodeado en `src/constants/menus/*.json`
-- `lawalletio/flutter-pos` replica el mismo esquema en `assets/menus/`
-- `lacrypta/menu-lacrypta` tiene una tercera copia, y su README documenta el procedimiento: *"Si el menú cambia en `mobile-pos`, volvé a copiar esos archivos a `data/`"*
+- `lawalletio/mobile-pos` (LaPOS, the POS used at events) has it hardcoded in `src/constants/menus/*.json`
+- `lawalletio/flutter-pos` mirrors the same schema in `assets/menus/`
+- `lacrypta/menu-lacrypta` holds a third copy, and its README documents the procedure: *"If the menu changes in `mobile-pos`, copy those files into `data/` again"*
 
-Acá el catálogo pasa a ser **datos del comerciante, portables, en nostr** — no un archivo en el git de alguien.
+Here the catalog becomes **the merchant's data, portable, on nostr** — not a file in somebody's git.
 
 ## Stack
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · shadcn/ui · applesauce + nostr-tools
 
-Requiere **Node 22** (ver `.nvmrc`): abajo de esa versión el `WebSocket` global no es estable y el lector de relays del servidor no arranca.
+Requires **Node 22** (see `.nvmrc`): below that version the global `WebSocket` is not stable and the server-side relay reader will not start.
 
 ```bash
 nvm use
@@ -26,58 +26,58 @@ npm install
 npm run dev
 ```
 
-### Variables de entorno
+### Environment variables
 
-Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en `.env.local`.
+All optional: with none of them, the catalog and the storefront work the same. They go in `.env.local`.
 
-| Variable | Para qué |
+| Variable | What for |
 |---|---|
-| `DATABASE_URL` | Postgres, **sólo** para cupones. Sin esto, `/api/coupons/*` responde 503 y el resto de la app anda igual. Es la conexión directa: con ella corren las migraciones. |
-| `DATABASE_POOL_URL` | El pooler del mismo Postgres, si el proveedor da uno. La app lo prefiere para consultar: en serverless cada instancia abre su pool, y contra la conexión directa eso agota el límite (o ni conecta — en Supabase el host directo es sólo IPv6). |
-| `COUPON_MANAGER_NSEC` | La identidad nostr de este servicio: firma los cupones que emite. Sin esto no se puede emitir ni canjear. |
-| `NEXT_PUBLIC_APP_URL` | El origen público. En producción **conviene setearlo**: es lo único que hace que la validación NIP-98 ignore los headers `x-forwarded-*`, que cualquiera puede falsificar. |
-| `SESSION_JWT_SECRET` | Firma los JWT de sesión, así el comerciante firma con nostr una vez por turno en vez de una vez por click. Sin esto se usa una clave por proceso: aceptable en una sola instancia, **hay que setearla con más de una** o los tokens de una los rechaza la otra. |
-| `LN_PROXY_SECRET` | Firma los tokens del proxy LNURL. Sin esto se usa una clave por proceso y los pagos en vuelo se cortan en cada deploy. |
+| `DATABASE_URL` | Postgres, **only** for coupons. Without it, `/api/coupons/*` answers 503 and the rest of the app runs fine. This is the direct connection: migrations run over it. |
+| `DATABASE_POOL_URL` | The pooler for the same Postgres, if the provider offers one. The app prefers it for queries: on serverless every instance opens its own pool, and against the direct connection that exhausts the limit (or never connects at all — on Supabase the direct host is IPv6-only). |
+| `COUPON_MANAGER_NSEC` | This service's nostr identity: it signs the coupons it issues. Without it, nothing can be minted or redeemed. |
+| `NEXT_PUBLIC_APP_URL` | The public origin. In production **set it**: it is the only thing that makes NIP-98 validation ignore the `x-forwarded-*` headers, which anyone can forge. |
+| `SESSION_JWT_SECRET` | Signs the session JWTs, so the merchant signs with nostr once per shift instead of once per click. Without it a per-process key is used: acceptable on a single instance, **must be set with more than one** or tokens minted by one are rejected by the other. |
+| `LN_PROXY_SECRET` | Signs the LNURL proxy tokens. Without it a per-process key is used and in-flight payments break on every deploy. |
 
-## Cómo se modela en nostr
+## How it is modeled on nostr
 
-| Kind | Uso |
+| Kind | Use |
 |---|---|
-| `30402` | Producto publicado ([NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md)) |
-| `30403` | Lápida al borrar un producto. **No hay borradores**: todo lo que se publica es un 30402 vivo. |
-| `30405` | Categoría ([GammaMarkets](https://github.com/GammaMarkets/market-spec/blob/main/spec.md), la extensión de e-commerce que el propio NIP-99 enlaza) |
-| `5` | Borrado (NIP-09) |
-| `0` · `10002` · `10063` | Perfil · relays NIP-65 · servidores Blossom |
-| `30078` | Datos de la app (NIP-78): config de WooCommerce (cifrada) y endpoints de cupones (en claro) |
-| `27235` | Autenticación HTTP (NIP-98). Se firma una vez por sesión y después va un JWT |
-| `20402` | Cupón firmado por este servicio. Nunca se publica: viaja en la respuesta HTTP. |
+| `30402` | Published product ([NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md)) |
+| `30403` | Tombstone when a product is deleted. **There are no drafts**: everything published is a live 30402. |
+| `30405` | Category ([GammaMarkets](https://github.com/GammaMarkets/market-spec/blob/main/spec.md), the e-commerce extension NIP-99 itself links to) |
+| `5` | Deletion (NIP-09) |
+| `0` · `10002` · `10063` | Profile · NIP-65 relays · Blossom servers |
+| `30078` | App data (NIP-78): WooCommerce config (encrypted) and coupon endpoints (in the clear) |
+| `27235` | HTTP auth (NIP-98). Signed once per session, then a JWT takes over |
+| `20402` | Coupon signed by this service. Never published: it travels in the HTTP response. |
 
-Decisiones que no son obvias y conviene no revertir sin leer el porqué:
+Decisions that are not obvious and should not be reverted without reading why:
 
-- **`d` es un uuid**, nunca derivado del título. Shopstr usa `sha256(nombre)` y renombrar huerfaniza el listing.
-- **`t` manda sobre la pertenencia**, `a` sólo ordena dentro de la categoría. Así una colección perdida cuesta orden, nunca membresía.
-- **`created_at` es estrictamente creciente por dirección.** NIP-01 desempata por id más bajo, y lo llama una convención que "las implementaciones pueden variar" — dos guardados en el mismo segundo pueden descartar tu edición sin avisar.
-- **Al borrar va primero el kind 5 y después la lápida**, en `t+1`. NIP-09 borra todo hasta *e incluyendo* el `created_at` del kind 5, así que el orden intuitivo se come la lápida.
-- **Las escrituras van a una cola en background.** Una vuelta NIP-46 tarda 3–15s; bloquear la UI haría que cargar cinco productos sea mirar una pantalla cinco minutos. Se firma de a uno: varios firmantes remotos descartan un `signEvent` concurrente.
-- **`purplepag.es` entra sólo como lectura.** Rechaza los productos con `blocked: kind 30402 is not allowed`, y dejarlo en escritura haría que toda publicación se vea parcial.
+- **`d` is a uuid**, never derived from the title. Shopstr uses `sha256(name)` and renaming orphans the listing.
+- **`t` decides membership**, `a` only orders within the category. That way a lost collection costs ordering, never membership.
+- **`created_at` is strictly increasing per address.** NIP-01 breaks ties by lowest id, and calls it a convention that "implementations may vary" — two saves in the same second can drop your edit without a word.
+- **On delete, the kind 5 goes first and the tombstone after**, at `t+1`. NIP-09 deletes everything up to *and including* the kind 5's `created_at`, so the intuitive order eats the tombstone.
+- **Writes go to a background queue.** A NIP-46 round trip takes 3–15s; blocking the UI would make loading five products mean staring at a screen for five minutes. They are signed one at a time: several remote signers drop a concurrent `signEvent`.
+- **`purplepag.es` is read-only.** It rejects products with `blocked: kind 30402 is not allowed`, and leaving it writable would make every publish look partial.
 
-## Cupones
+## Coupons
 
-Cinco tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), **comprá A, llevate B gratis**, y **producto gratis** (los productos y cantidades que elijas, sin comprar nada a cambio). Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra. Cualquiera de los cinco acepta un **tope de descuento** opcional — "20% de descuento, hasta ARS 5.000".
+Five types: **percentage**, **fixed amount** (ARS/USD/SAT), **NxM** (2-for-1, 3-for-2…), **buy A, get B free**, and **free product** (the products and quantities you choose, with nothing to buy in return). The first three can be narrowed to specific products; with no products chosen they apply to the whole basket. Any of the five accepts an optional **discount cap** — "20% off, up to ARS 5,000".
 
-El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
+The merchant **activates the service** by signing a kind-30078 that says where to mint and where to redeem. That event is the only thing that lets somebody else's till find this server, and until it exists no coupons can be created.
 
-Es la única parte de la app con base de datos, y el motivo es corto: *"¿este cupón ya se usó?"* tiene que tener una sola respuesta en el instante en que dos cajas la preguntan, y los relays son consistentes-eventualmente por diseño.
+It is the only part of the app with a database, and the reason is short: *"has this coupon been used?"* has to have exactly one answer at the instant two tills ask it, and relays are eventually-consistent by design.
 
-📄 **Documentación completa** — [`docs/cupones.md`](docs/cupones.md) es la portada, y desde ahí:
+📄 **Full documentation** — [`docs/cupones.md`](docs/cupones.md) is the front page, and from there:
 
 | | |
 |---|---|
-| [Descuentos](docs/cupones-descuentos.md) | Los cinco tipos, el alcance por producto, el tope y la aritmética |
-| [API](docs/cupones-api.md) | Cada endpoint con su cuerpo, su respuesta y sus errores, y el esquema de cada tipo |
-| [Eventos de nostr](docs/cupones-nostr.md) | El anuncio (30078) y el voucher (20402), y cómo verificarlos |
-| [Flujos](docs/cupones-flujos.md) | De punta a punta, y las decisiones que conviene no revertir |
-| [Datos](docs/cupones-datos.md) | Las cuatro tablas y qué garantiza cada columna |
+| [Discounts](docs/cupones-descuentos.md) | The five types, product scope, the cap and the arithmetic |
+| [API](docs/cupones-api.md) | Every endpoint with its body, its response and its errors, plus the schema of every return type |
+| [Nostr events](docs/cupones-nostr.md) | The announcement (30078) and the voucher (20402), and how to verify them |
+| [Flows](docs/cupones-flujos.md) | End to end, and the decisions worth not reverting |
+| [Data](docs/cupones-datos.md) | The four tables and what each column guarantees |
 
 ```bash
 docker run -d --name merchant-pg -p 55432:5432 \
@@ -87,36 +87,36 @@ docker run -d --name merchant-pg -p 55432:5432 \
 
 ```bash
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
-COUPON_MANAGER_NSEC=nsec1…       # la identidad que firma los vouchers
+COUPON_MANAGER_NSEC=nsec1…       # the identity that signs the vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
-SESSION_JWT_SECRET=…             # opcional en una sola instancia
+SESSION_JWT_SECRET=…             # optional on a single instance
 ```
 
 ```bash
-npm run db:generate   # después de tocar el schema
-npm run db:migrate    # a mano; el deploy ya lo hace solo
+npm run db:generate   # after touching the schema
+npm run db:migrate    # by hand; the deploy already does it
 ```
 
-`npm run build` corre las migraciones antes de compilar **si hay `DATABASE_URL`**, y
-falla el build si no aplican: un deploy contra un esquema viejo rompe más callado.
-Sin `DATABASE_URL` no migra nada y compila igual.
+`npm run build` runs the migrations before compiling **if `DATABASE_URL` is set**, and
+fails the build if they do not apply: a deploy against an old schema breaks more quietly.
+Without `DATABASE_URL` nothing migrates and it compiles all the same.
 
-Sin esas variables la app arranca igual y los endpoints de cupones responden `503`: no tener base es un estado soportado.
+Without those variables the app still starts and the coupon endpoints answer `503`: having no database is a supported state.
 
-## Interoperabilidad con el POS
+## POS interoperability
 
-`GET /api/pos/[handle]/{products,categories}` emite exactamente la forma que consume LaPOS.
+`GET /api/pos/[handle]/{products,categories}` emits exactly the shape LaPOS consumes.
 
-**No es drop-in**: hay que tocar `mobile-pos`. `categories.json` es un import estático y los menús son un import dinámico con template literal — dos cambios distintos.
+**It is not drop-in**: `mobile-pos` has to be touched. `categories.json` is a static import and the menus are a dynamic import with a template literal — two different changes.
 
-## Estado
+## Status
 
-El sitio son dos mitades: **`/admin/*` es el panel privado** —todo detrás del login— y el resto es público (`/` y la tienda en `/s/<npub o nip05>`).
+The site is two halves: **`/admin/*` is the private dashboard** — everything behind the login — and the rest is public (`/` and the storefront at `/s/<npub or nip05>`).
 
-Funciona: login (NIP-07 · bunker · QR), catálogo con categorías y productos anidados, alta/edición/borrado, ajustes de relays NIP-65 con sugerencias, tienda pública, avatares nostr y verificación NIP-05.
+Working: login (NIP-07 · bunker · QR), catalog with nested categories and products, create/edit/delete, NIP-65 relay settings with suggestions, public storefront, nostr avatars and NIP-05 verification.
 
-Falta: subida de imágenes con recorte a Blossom (hoy se pega una URL), tests del dominio, y el endpoint de cotizaciones ARS/USD/SAT.
+Missing: image upload with cropping to Blossom (today you paste a URL), domain tests, and the ARS/USD/SAT rates endpoint.
 
-## Licencia
+## License
 
-MIT. La tipografía Standerd viene de [`lacrypta/branding`](https://github.com/lacrypta/branding) (MIT, © Peronio.AR).
+MIT. The Standerd typeface comes from [`lacrypta/branding`](https://github.com/lacrypta/branding) (MIT, © Peronio.AR).
