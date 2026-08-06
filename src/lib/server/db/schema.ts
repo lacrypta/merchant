@@ -82,6 +82,12 @@ export const couponDefinitions = pgTable(
     giftProductD: uuid("gift_product_d"),
     /** free_items: `[{ d, qty }]` handed over. Never null for that type. */
     freeItems: jsonb("free_items").$type<FreeUnits[]>(),
+    /**
+     * Optional ceiling on the discount, in the currency it was authored in.
+     * Applies to every type — see DiscountCap. Both columns null, or both set.
+     */
+    capAmount: numeric("cap_amount", { precision: 14, scale: 2 }),
+    capCurrency: varchar("cap_currency", { length: 3 }),
 
     /** null ⇒ unlimited mints. */
     maxUses: integer("max_uses"),
@@ -133,10 +139,32 @@ export const couponMints = pgTable(
     status: couponMintStatus("status").notNull().default("minted"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
+
+    /**
+     * What was bought with it — the signed kind-9734, verbatim.
+     *
+     * There is no orders table: a paid order is reconstructed from the zap
+     * receipt on relays. That breaks down for a coupon that takes the total to
+     * zero, because an order nobody pays for produces no invoice and therefore
+     * no receipt. Recording the request here at claim time is what gives the
+     * merchant an order to look at, and it is the only record a free one has.
+     *
+     * Null on coupons redeemed at a counter rather than through the checkout.
+     */
+    orderEvent: jsonb("order_event").$type<SignedEvent>(),
+    /** `orderEvent.id`, denormalized so "which coupon paid for order X?" is an index hit. */
+    orderId: varchar("order_id", { length: 64 }),
+    /**
+     * What the checkout was about to charge, in msat. `0` is the whole point:
+     * it marks a redemption that will never have a receipt, so the order book
+     * can list it instead of waiting forever for a payment that is not coming.
+     */
+    amountMsat: integer("amount_msat"),
   },
   (t) => [
     uniqueIndex("coupon_mints_nonce_unique").on(t.nonce),
     index("coupon_mints_definition_idx").on(t.definitionId, t.status),
+    index("coupon_mints_order_idx").on(t.orderId),
   ]
 )
 

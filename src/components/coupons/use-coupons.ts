@@ -275,3 +275,52 @@ export function useCouponMints(couponId: string | null): {
     },
   }
 }
+
+/** One redemption, with the order it paid for. */
+export interface RedemptionJson {
+  nonce: string
+  claimedAt: number
+  couponId: string
+  name: string
+  benefit: Benefit | null
+  /** The signed kind-9734. Null when the coupon was redeemed outside a checkout. */
+  order: SignedEvent | null
+  orderId: string | null
+  /** `0` means it was reclaimed rather than paid — no receipt will ever exist. */
+  amountMsat: number | null
+}
+
+/**
+ * Every coupon this merchant has had redeemed.
+ *
+ * Read by two screens: the "Canjeados" tab, and the order list — which needs it
+ * because a reclaimed order has no zap receipt and would otherwise be invisible
+ * there.
+ */
+export function useRedemptions(enabled = true): {
+  redemptions: RedemptionJson[]
+  loading: boolean
+  error: ApiError | null
+} {
+  const { state, signer } = useAuth()
+  const pubkey = state.status === "ready" ? state.pubkey : null
+
+  const query = useQuery({
+    queryKey: qk.couponRedemptions(pubkey ?? "anon"),
+    enabled: enabled && !!pubkey && !!signer,
+    ...CACHE.coupons,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ redemptions: RedemptionJson[] }>(
+        signer!,
+        pubkey!,
+        "/api/coupons/redemptions"
+      ),
+  })
+
+  return {
+    redemptions: query.data?.redemptions ?? [],
+    loading: query.isPending && enabled && !!pubkey && !!signer,
+    error: asApiError(query.error),
+  }
+}

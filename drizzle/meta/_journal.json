@@ -43,6 +43,20 @@
       "when": 1785980889366,
       "tag": "0005_tricky_stryfe",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785989308729,
+      "tag": "0006_abandoned_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786041715414,
+      "tag": "0007_milky_colonel_america",
+      "breakpoints": true
     }
   ]
 }

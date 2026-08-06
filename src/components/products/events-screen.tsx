@@ -296,7 +296,11 @@ export function EventsScreen() {
                   ]}
                 />
                 {hasActiveFilters ? (
-                  <Button variant="ghost" size="sm" onClick={resetFilters}>
+                  <Button
+                    variant="ghost"
+                    className="h-11 rounded-full"
+                    onClick={resetFilters}
+                  >
                     Limpiar
                   </Button>
                 ) : null}

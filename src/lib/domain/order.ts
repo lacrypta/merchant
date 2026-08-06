@@ -41,12 +41,19 @@ export type OrderStatus =
   | "awaiting_invoice"
   | "invoice_failed"
   | "awaiting_payment"
+  /**
+   * Nothing to pay: a coupon took the total to zero and the customer reclaimed
+   * the order instead of paying it. Distinct from `paid` because there is no
+   * invoice and no proof — `settle()` cannot produce this one, and the record
+   * that it happened lives in the coupon claim, not in a zap receipt.
+   */
+  | "claimed"
   | "expired"
   | "paid"
   | "manually_confirmed"
   | "cancelled"
 
-const TERMINAL: ReadonlySet<OrderStatus> = new Set(["paid", "cancelled"])
+const TERMINAL: ReadonlySet<OrderStatus> = new Set(["paid", "claimed", "cancelled"])
 export const isTerminal = (s: OrderStatus) => TERMINAL.has(s)
 
 export interface OrderLine {

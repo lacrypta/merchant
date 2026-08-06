@@ -5,6 +5,7 @@ import { KINDS } from "@/lib/domain/kinds"
 import {
   allocateOrderLineSats,
   parseZapReceiptOrder,
+  parseZapRequestOrder,
   type ZapReceiptOrder,
 } from "@/lib/domain/zap-order"
 import type { SignedEvent } from "@/lib/nostr/types"
@@ -193,6 +194,64 @@ describe("allocateOrderLineSats", () => {
       lines: [{ sats: null }, { sats: null }],
     })
   })
+
+  /**
+   * The bug this guards: a free-beer coupon used to be spread across the whole
+   * basket, so every product came out looking a little cheaper and the beer
+   * looked like it had been sold at a discount it never got.
+   */
+  it("charges a free item to its own line instead of spreading it", () => {
+    const lines = [
+      { d: "cerveza", qty: 2, unitAmount: 1_000, currency: "ARS" },
+      { d: "papas", qty: 1, unitAmount: 1_000, currency: "ARS" },
+    ]
+    // Gross ARS 3000, one beer free ⇒ ARS 2000 charged ⇒ 2000 sats at 1:1.
+    const result = allocateOrderLineSats(order(lines, 2_000), null, {
+      type: "freeItems",
+      items: [{ d: "cerveza", qty: 1 }],
+    })
+
+    expect(result.quality).toBe("exact")
+    expect(result.lines.map((line) => line.sats)).toEqual([1_000, 1_000])
+    expect(result.lines.map((line) => line.freeQty)).toEqual([1, 0])
+    expect(result.lines.map((line) => line.discount)).toEqual([1_000, 0])
+    // Whatever the split, it still reconciles to the receipt.
+    expect(result.lines.reduce((sum, line) => sum + (line.sats ?? 0), 0)).toBe(2_000)
+  })
+
+  it("keeps spreading a percentage, which really did come off everything", () => {
+    const result = allocateOrderLineSats(
+      order(
+        [
+          { d: "cerveza", qty: 2, unitAmount: 1_000, currency: "ARS" },
+          { d: "papas", qty: 1, unitAmount: 1_000, currency: "ARS" },
+        ],
+        2_700
+      ),
+      null,
+      { type: "percent", percent: 10 }
+    )
+
+    expect(result.lines.map((line) => line.sats)).toEqual([1_800, 900])
+    expect(result.lines.map((line) => line.freeQty)).toEqual([0, 0])
+  })
+
+  it("gives every line a zero instead of a dash when nothing was charged", () => {
+    const result = allocateOrderLineSats(
+      order(
+        [
+          { d: "cerveza", qty: 1, unitAmount: 1_000, currency: "ARS" },
+          { d: "papas", qty: 1, unitAmount: 1_000, currency: "ARS" },
+        ],
+        0
+      ),
+      null,
+      { type: "percent", percent: 100 }
+    )
+
+    expect(result.quality).toBe("exact")
+    expect(result.lines.map((line) => line.sats)).toEqual([0, 0])
+  })
 })
 
 describe("coupon projection", () => {
@@ -256,5 +315,70 @@ describe("coupon projection", () => {
       MERCHANT
     )
     expect(parsed?.discounts).toEqual([{ amount: 50, currency: "USD" }])
+  })
+})
+
+describe("parseZapRequestOrder", () => {
+  const request = (tags: string[][]) =>
+    event({ kind: KINDS.ZAP_REQUEST, tags: [["p", MERCHANT], ...tags] })
+
+  it("projects a reclaimed order — no receipt, no charge", () => {
+    const parsed = parseZapRequestOrder(
+      request([
+        ["items_count", "2"],
+        ["total", "1000", "ARS"],
+        ["coupon", "33333333-3333-4333-8333-333333333333", "freeItems", "Café gratis"],
+        ["discount", "1000", "ARS"],
+        ["item", "cafe", "2", "500", "ARS"],
+      ]),
+      0
+    )
+
+    expect(parsed.receipt).toBeNull()
+    expect(parsed.receiptSats).toBe(0)
+    expect(parsed.itemsCount).toBe(2)
+    expect(parsed.lines).toEqual([{ d: "cafe", qty: 2, unitAmount: 500, currency: "ARS" }])
+    // Gross, exactly as on a paid order: gross − discount is what was charged,
+    // and here that is zero.
+    expect(parsed.totals).toEqual([{ amount: 1000, currency: "ARS" }])
+    expect(parsed.discounts).toEqual([{ amount: 1000, currency: "ARS" }])
+    expect(parsed.coupon).toEqual({
+      id: "33333333-3333-4333-8333-333333333333",
+      type: "freeItems",
+      name: "Café gratis",
+    })
+  })
+
+  it("reads the same tags the receipt path does", () => {
+    const tags = [
+      ["total", "1000", "ARS"],
+      ["coupon", "an-id", "percent", "Promo"],
+      ["discount", "100", "ARS"],
+      ["item", "cafe", "1", "1000", "ARS"],
+    ]
+    const zapRequest = request(tags)
+    const receipt = event({
+      tags: [["p", MERCHANT], ["description", JSON.stringify(zapRequest)]],
+    })
+
+    const fromReceipt = parseZapReceiptOrder(receipt, MERCHANT)!
+    const fromRequest = parseZapRequestOrder(zapRequest)
+
+    expect(fromRequest.lines).toEqual(fromReceipt.lines)
+    expect(fromRequest.totals).toEqual(fromReceipt.totals)
+    expect(fromRequest.coupon).toEqual(fromReceipt.coupon)
+    expect(fromRequest.discounts).toEqual(fromReceipt.discounts)
+  })
+
+  it("survives a missing request", () => {
+    expect(parseZapRequestOrder(null)).toMatchObject({
+      receipt: null,
+      zapRequest: null,
+      lines: [],
+      totals: [],
+      coupon: null,
+      discounts: [],
+      receiptSats: null,
+    })
   })
 })

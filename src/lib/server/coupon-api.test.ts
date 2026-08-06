@@ -6,7 +6,7 @@ import type { SignedEvent } from "@/lib/nostr/types"
 import { MAX_BODY_BYTES } from "@/lib/server/http"
 import { __resetNip98Replay } from "@/lib/server/nip98"
 import { mintSessionToken } from "@/lib/server/session-token"
-import { requireAuth } from "./coupon-api"
+import { parseClaimedOrder, requireAuth } from "./coupon-api"
 
 /**
  * `requireAuth` is the single choke point for every coupon route, and it now
@@ -153,5 +153,68 @@ describe("requireAuth · NIP-98 still works", () => {
     expect("response" in auth).toBe(true)
     if (!("response" in auth)) return
     expect(await body(auth.response)).toMatchObject({ reason: "session-invalid" })
+  })
+})
+
+describe("parseClaimedOrder", () => {
+  const order = (overrides: Partial<SignedEvent> = {}): SignedEvent => {
+    const template = {
+      kind: 9734,
+      created_at: nowSeconds(),
+      content: "",
+      tags: [
+        ["p", "b".repeat(64)],
+        ["coupon", "an-id", "percent", "Promo"],
+      ] as string[][],
+      ...overrides,
+    }
+    const signed = finalizeEvent(template, generateSecretKey()) as SignedEvent
+    return { ...signed, ...(overrides.sig ? { sig: overrides.sig } : {}) }
+  }
+
+  it("accepts a signed zap request that names a coupon", () => {
+    const event = order()
+    expect(parseClaimedOrder(event, 0)).toEqual({ event, amountMsat: 0 })
+  })
+
+  it("accepts the event as a JSON string, the way a POS may send it", () => {
+    const event = order()
+    // Compared by id, not by identity: a JSON round trip drops nostr-tools'
+    // non-enumerable "already verified" symbol, which is the point of
+    // verifySignedEvent rebuilding the canonical fields.
+    expect(parseClaimedOrder(JSON.stringify(event), 21_000)).toMatchObject({
+      event: { id: event.id, sig: event.sig },
+      amountMsat: 21_000,
+    })
+  })
+
+  it("rejects a forged signature", () => {
+    expect(parseClaimedOrder(order({ sig: "d".repeat(128) }), 0)).toBeUndefined()
+  })
+
+  it("rejects anything that is not a zap request", () => {
+    expect(parseClaimedOrder(order({ kind: 1 }), 0)).toBeUndefined()
+  })
+
+  it("rejects a request that names no coupon", () => {
+    expect(parseClaimedOrder(order({ tags: [["p", "b".repeat(64)]] }), 0)).toBeUndefined()
+  })
+
+  it("rejects an oversized request", () => {
+    const fat = order({ tags: [["coupon", "an-id", "percent", "x".repeat(9000)]] })
+    expect(parseClaimedOrder(fat, 0)).toBeUndefined()
+  })
+
+  it("rejects an amount that is missing, negative or not an integer", () => {
+    expect(parseClaimedOrder(order(), undefined)).toBeUndefined()
+    expect(parseClaimedOrder(order(), -1)).toBeUndefined()
+    expect(parseClaimedOrder(order(), 1.5)).toBeUndefined()
+    expect(parseClaimedOrder(order(), "1000")).toBeUndefined()
+  })
+
+  it("returns undefined when no order was sent at all", () => {
+    expect(parseClaimedOrder(undefined, undefined)).toBeUndefined()
+    expect(parseClaimedOrder(null, 0)).toBeUndefined()
+    expect(parseClaimedOrder("no es json", 0)).toBeUndefined()
   })
 })

@@ -2,6 +2,7 @@
 
 import { Loader2, ShoppingBag, Zap } from "lucide-react"
 import { useRouter } from "next/navigation"
+import type * as React from "react"
 
 import { CartContents, useCanPay } from "@/components/cart/cart-contents"
 import { useCart } from "@/components/cart/cart-provider"
@@ -20,7 +21,16 @@ import { Odometer } from "@/components/ui/odometer"
  * on screen for the whole scroll of a long menu — which is the entire reason
  * to spend a column on it rather than keep the modal.
  */
-export function CartAside() {
+export function CartAside({
+  /**
+   * The coupon input, resolved on the server and handed down already rendered.
+   * Absent — or null once it resolves — when this shop has not announced
+   * coupons pointing at this deployment.
+   */
+  couponSlot,
+}: {
+  couponSlot?: React.ReactNode
+}) {
   const { merchant, catalog, catalogReady, count, hydrated, clear } = useCart()
   const router = useRouter()
   const canPay = useCanPay()
@@ -58,7 +68,6 @@ export function CartAside() {
           <>
             <div className="-mr-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2">
               <CartContents
-                compact
                 emptyMessage={
                   <EmptyHint
                     state={
@@ -70,7 +79,8 @@ export function CartAside() {
             </div>
 
             {count > 0 ? (
-              <div className="enter-row mt-4 shrink-0 space-y-2">
+              <div className="enter-row mt-4 shrink-0 space-y-3">
+                {couponSlot}
                 <Button
                   fullWidth
                   disabled={!canPay}
@@ -79,7 +89,13 @@ export function CartAside() {
                   <Zap className="size-4" aria-hidden />
                   Pagar con Lightning
                 </Button>
-                <Button fullWidth variant="ghost" size="sm" onClick={clear}>
+                <Button
+                  fullWidth
+                  variant="ghost"
+                  size="sm"
+                  className="-mt-1"
+                  onClick={clear}
+                >
                   Vaciar
                 </Button>
               </div>

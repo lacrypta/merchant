@@ -2,6 +2,7 @@
 
 import { Zap } from "lucide-react"
 import { useRouter } from "next/navigation"
+import type * as React from "react"
 
 import { CartContents, useCanPay } from "@/components/cart/cart-contents"
 import { useCart } from "@/components/cart/cart-provider"
@@ -28,7 +29,7 @@ import { useIsDesktop } from "@/hooks/use-media-query"
  * already applies `.safe-b` — which matters because the footer holds the pay
  * button and an iOS home indicator will happily eat that tap.
  */
-export function CartPanel() {
+export function CartPanel({ couponSlot }: { couponSlot?: React.ReactNode }) {
   const { merchant, count, panelOpen, setPanelOpen, clear } = useCart()
   const isDesktop = useIsDesktop()
   const router = useRouter()
@@ -49,6 +50,8 @@ export function CartPanel() {
         </ResponsiveDialogHeader>
 
         <CartContents />
+
+        {count > 0 ? <div className="mt-4">{couponSlot}</div> : null}
 
         <ResponsiveDialogFooter className="mt-6 flex-row gap-2">
           {count > 0 ? (

@@ -35,13 +35,35 @@ export type CouponType =
 export type ProductScope = string[] | undefined
 
 /**
+ * A ceiling on what the coupon may take off, whatever its terms work out to.
+ *
+ * "20% off, up to ARS 5.000" is the shape every merchant asks for eventually,
+ * and it is what makes a percentage safe to hand out at all — without it, one
+ * shopper with an unusually large basket can spend the whole promo budget.
+ *
+ * It applies to EVERY type on purpose: a 2x1 on a case of wine and a free-items
+ * coupon on an expensive product need the same brake, and having it only on
+ * percentages would be an arbitrary hole.
+ */
+export interface DiscountCap {
+  amount: number
+  currency: Currency
+}
+
+/**
  * What a coupon takes off the bill.
  *
  * A discriminated union rather than a bag of optional fields: "a 2x1 with a
  * percentage" is not a thing, and the type system should say so once here
  * instead of every caller re-checking.
+ *
+ * The cap is intersected on rather than repeated in each member: it is the one
+ * thing that genuinely applies to all of them, and writing it five times is how
+ * the sixth type ends up without it.
  */
-export type Benefit =
+export type Benefit = BenefitTerms & { cap?: DiscountCap }
+
+type BenefitTerms =
   /** A percentage off the basket, or off `productDs` when narrowed. */
   | { type: "percent"; percent: number; productDs?: string[] }
   /** A flat amount off, in the currency the merchant authored it in. */
@@ -166,6 +188,32 @@ function parseFreeItems(raw: unknown): ParsedItems {
 const withScope = (productDs: string[] | undefined) =>
   productDs ? { productDs } : {}
 
+type ParsedCap =
+  | { ok: true; value: DiscountCap | undefined }
+  | { ok: false; reason: string }
+
+/**
+ * Read the optional ceiling. Absent, null and 0 all mean "no cap" — a zero
+ * ceiling would be a coupon that discounts nothing, which nobody authors.
+ */
+function parseCap(raw: unknown): ParsedCap {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined }
+  if (typeof raw !== "object") return { ok: false, reason: "el tope no es válido" }
+  const { amount, currency } = raw as Record<string, unknown>
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, reason: "el tope tiene que ser mayor a 0" }
+  }
+  if (typeof currency !== "string" || !isSupportedCurrency(currency)) {
+    return { ok: false, reason: `la moneda del tope tiene que ser ${CURRENCIES.join(", ")}` }
+  }
+  if (currency === "SAT" && !Number.isInteger(amount)) {
+    return { ok: false, reason: "en sats el tope tiene que ser entero" }
+  }
+  return { ok: true, value: { amount, currency } }
+}
+
+const withCap = (cap: DiscountCap | undefined) => (cap ? { cap } : {})
+
 /**
  * Validate an untrusted benefit — a request body, or a jsonb column written by
  * an older version of this code.
@@ -177,6 +225,10 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
   if (typeof raw !== "object" || raw === null) return bad("no es un objeto")
   const b = raw as Record<string, unknown>
 
+  const parsedCap = parseCap(b.cap)
+  if (!parsedCap.ok) return bad(parsedCap.reason)
+  const cap = withCap(parsedCap.value)
+
   switch (b.type) {
     case "percent": {
       if (!isPositiveInt(b.percent, 100)) {
@@ -186,7 +238,7 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
       if (!scope.ok) return bad(scope.reason)
       return {
         ok: true,
-        value: { type: "percent", percent: b.percent, ...withScope(scope.value) },
+        value: { type: "percent", percent: b.percent, ...withScope(scope.value), ...cap },
       }
     }
 
@@ -207,7 +259,7 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
       if (!scope.ok) return bad(scope.reason)
       return {
         ok: true,
-        value: { type: "fixed", amount, currency, ...withScope(scope.value) },
+        value: { type: "fixed", amount, currency, ...withScope(scope.value), ...cap },
       }
     }
 
@@ -228,7 +280,7 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
       if (!scope.ok) return bad(scope.reason)
       return {
         ok: true,
-        value: { type: "multibuy", buyQty, payQty, ...withScope(scope.value) },
+        value: { type: "multibuy", buyQty, payQty, ...withScope(scope.value), ...cap },
       }
     }
 
@@ -236,13 +288,13 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
       const { buyProductD, giftProductD } = b
       if (!isProductD(buyProductD)) return bad("el producto a comprar no es válido")
       if (!isProductD(giftProductD)) return bad("el producto de regalo no es válido")
-      return { ok: true, value: { type: "buyXgetY", buyProductD, giftProductD } }
+      return { ok: true, value: { type: "buyXgetY", buyProductD, giftProductD, ...cap } }
     }
 
     case "freeItems": {
       const items = parseFreeItems(b.items)
       if (!items.ok) return bad(items.reason)
-      return { ok: true, value: { type: "freeItems", items: items.value } }
+      return { ok: true, value: { type: "freeItems", items: items.value, ...cap } }
     }
 
     default:
@@ -280,6 +332,9 @@ export interface BenefitColumns {
    * column would make every reader check `type` before knowing which.
    */
   freeItems: FreeUnits[] | null
+  /** The optional ceiling. Both null together, or both set. */
+  capAmount: string | null
+  capCurrency: string | null
 }
 
 const EMPTY_COLUMNS: Omit<BenefitColumns, "type"> = {
@@ -292,9 +347,24 @@ const EMPTY_COLUMNS: Omit<BenefitColumns, "type"> = {
   buyProductD: null,
   giftProductD: null,
   freeItems: null,
+  capAmount: null,
+  capCurrency: null,
 }
 
 export function benefitToColumns(b: Benefit): BenefitColumns {
+  return { ...termsToColumns(b), ...capToColumns(b.cap) }
+}
+
+/** Written once here, so a new benefit type cannot forget the ceiling. */
+function capToColumns(cap: DiscountCap | undefined) {
+  if (!cap) return { capAmount: null, capCurrency: null }
+  return {
+    capAmount: cap.currency === "SAT" ? String(cap.amount) : cap.amount.toFixed(2),
+    capCurrency: cap.currency,
+  }
+}
+
+function termsToColumns(b: Benefit): BenefitColumns {
   switch (b.type) {
     case "percent":
       return {
@@ -341,12 +411,18 @@ export function benefitToColumns(b: Benefit): BenefitColumns {
  * surface as an error and not as a coupon that discounts NaN.
  */
 export function benefitFromColumns(row: Partial<BenefitColumns>): ParsedBenefit {
+  const cap =
+    row.capAmount === null || row.capAmount === undefined
+      ? undefined
+      : { amount: Number(row.capAmount), currency: row.capCurrency }
+
   switch (row.type) {
     case "percent":
       return parseBenefit({
         type: "percent",
         percent: row.percent,
         productDs: row.productDs ?? undefined,
+        cap,
       })
     case "fixed":
       return parseBenefit({
@@ -354,6 +430,7 @@ export function benefitFromColumns(row: Partial<BenefitColumns>): ParsedBenefit 
         amount: row.amount === null || row.amount === undefined ? null : Number(row.amount),
         currency: row.currency,
         productDs: row.productDs ?? undefined,
+        cap,
       })
     case "multibuy":
       return parseBenefit({
@@ -361,15 +438,17 @@ export function benefitFromColumns(row: Partial<BenefitColumns>): ParsedBenefit 
         buyQty: row.buyQty,
         payQty: row.payQty,
         productDs: row.productDs ?? undefined,
+        cap,
       })
     case "buy_x_get_y":
       return parseBenefit({
         type: "buyXgetY",
         buyProductD: row.buyProductD,
         giftProductD: row.giftProductD,
+        cap,
       })
     case "free_items":
-      return parseBenefit({ type: "freeItems", items: row.freeItems })
+      return parseBenefit({ type: "freeItems", items: row.freeItems, cap })
     default:
       return bad("tipo de cupón desconocido")
   }
@@ -443,6 +522,16 @@ function money(amount: number, currency: string): string {
  *   product this client has not loaded — or one the merchant has since deleted.
  */
 export function describeBenefit(
+  b: Benefit,
+  titleOf?: (d: string) => string | undefined
+): string {
+  const terms = describeTerms(b, titleOf)
+  // The ceiling belongs in the same sentence: a shopper who reads "20% de
+  // descuento" and is charged as if it were less has been told half the deal.
+  return b.cap ? `${terms} (hasta ${money(b.cap.amount, b.cap.currency)})` : terms
+}
+
+function describeTerms(
   b: Benefit,
   titleOf?: (d: string) => string | undefined
 ): string {
@@ -542,14 +631,16 @@ export interface PricedCart {
 }
 
 /**
- * Never let a discount drive the invoice to zero.
+ * A discount MAY drive the bill to zero.
  *
- * A zero-sat invoice is not payable — wallets reject it and LNURL servers
- * declare a `minSendable` of at least one sat. A 100%-off coupon therefore
- * leaves one satoshi on the bill, which is a rounding artefact at any real
- * price and infinitely better than a checkout that cannot produce an invoice.
+ * It used to leave one satoshi behind, because a zero-sat invoice is not
+ * payable: wallets reject it and LNURL servers declare a `minSendable` of at
+ * least one sat. That reasoning still holds — which is why a zero total does
+ * not produce an invoice at all. The checkout switches to "Reclamar" and the
+ * coupon claim itself becomes the record of the order, so the constant is kept
+ * at 0 rather than deleted: it is the seam where that decision is made.
  */
-export const MIN_CHARGE_SATS = 1
+export const MIN_CHARGE_SATS = 0
 
 function subtotalsByCurrency(lines: readonly CartLine[]): DiscountEntry[] {
   const out: DiscountEntry[] = []
@@ -670,8 +761,34 @@ function missingProducts(
   return []
 }
 
+/**
+ * Hold a discount to its ceiling.
+ *
+ * The cap clamps the entry in ITS OWN currency and leaves the rest alone —
+ * the same rule `fixed` already follows, and for the same reason: converting
+ * would need a rate table this layer deliberately does not take, and guessing
+ * at a number is worse than applying the ceiling where it was authored. Every
+ * real basket is single-currency, where this is exactly "hasta ARS 5.000".
+ */
+function capEntries(
+  entries: DiscountEntry[],
+  cap: DiscountCap | undefined
+): DiscountEntry[] {
+  if (!cap) return entries
+  return entries.map((e) =>
+    e.currency === cap.currency ? { ...e, amount: Math.min(e.amount, cap.amount) } : e
+  )
+}
+
 /** Per-currency value of what the coupon takes off, before any clamping. */
 export function discountEntries(
+  lines: readonly CartLine[],
+  benefit: Benefit
+): DiscountEntry[] {
+  return capEntries(entriesFromTerms(lines, benefit), benefit.cap)
+}
+
+function entriesFromTerms(
   lines: readonly CartLine[],
   benefit: Benefit
 ): DiscountEntry[] {
@@ -724,6 +841,84 @@ export function discountEntries(
       return out
         .map((s) => ({ currency: s.currency, amount: roundMoney(s.amount, s.currency) }))
         .filter((s) => s.amount > 0)
+    }
+  }
+}
+
+/**
+ * The same discount, split across the LINES it actually came off.
+ *
+ * `discountEntries` answers "how much, per currency", which is all the checkout
+ * needs — it charges one total. The order book needs the other half: a coupon
+ * for a free beer took the price of one beer, not a slice of every line, and an
+ * order that spreads it proportionally reports the wrong revenue for every
+ * product in the basket.
+ *
+ * Returns one amount per line, in that line's own currency, positionally.
+ */
+export function discountByLine(
+  lines: readonly CartLine[],
+  benefit: Benefit
+): number[] {
+  const raw = byLineFromTerms(lines, benefit)
+  const cap = benefit.cap
+  if (!cap) return raw
+
+  // Scaled, not truncated: the ceiling is a property of the whole discount, so
+  // taking it out of whichever line happens to be first would report a product
+  // as having absorbed a cut it did not.
+  const total = lines.reduce(
+    (sum, l, i) => (l.currency === cap.currency ? sum + raw[i]! : sum),
+    0
+  )
+  if (total <= cap.amount) return raw
+  const factor = cap.amount / total
+  return raw.map((amount, i) =>
+    lines[i]!.currency === cap.currency
+      ? roundMoney(amount * factor, cap.currency)
+      : amount
+  )
+}
+
+function byLineFromTerms(
+  lines: readonly CartLine[],
+  benefit: Benefit
+): number[] {
+  switch (benefit.type) {
+    case "multibuy":
+    case "buyXgetY":
+    case "freeItems": {
+      // Whole units of a named product. The only honest split there is.
+      const free = freeUnitsFor(lines, benefit)
+      return lines.map((l) => {
+        const qty = free.find((f) => f.d === l.d)?.qty ?? 0
+        return qty > 0 ? roundMoney(l.unitAmount * qty, l.currency) : 0
+      })
+    }
+
+    case "percent": {
+      const scope = scopedLines(lines, benefit.productDs)
+      return lines.map((l) =>
+        scope.includes(l)
+          ? roundMoney((l.unitAmount * l.qty * benefit.percent) / 100, l.currency)
+          : 0
+      )
+    }
+
+    case "fixed": {
+      // A lump sum genuinely has no line it belongs to, so it IS spread — but
+      // only over the lines the coupon is scoped to, and only in its own
+      // currency. The total matches discountEntries by construction.
+      const scope = scopedLines(lines, benefit.productDs)
+      const eligible = scope.filter((l) => l.currency === benefit.currency)
+      const subtotal = eligible.reduce((sum, l) => sum + l.unitAmount * l.qty, 0)
+      const amount = Math.min(benefit.amount, subtotal)
+      if (amount <= 0 || subtotal <= 0) return lines.map(() => 0)
+      return lines.map((l) =>
+        eligible.includes(l)
+          ? roundMoney(((l.unitAmount * l.qty) / subtotal) * amount, l.currency)
+          : 0
+      )
     }
   }
 }

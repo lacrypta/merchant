@@ -7,6 +7,7 @@ import {
   benefitFromColumns,
   benefitToColumns,
   describeBenefit,
+  discountByLine,
   discountEntries,
   freeUnitsFor,
   isValidNonce,
@@ -374,14 +375,15 @@ describe("priceCart", () => {
     ])
   })
 
-  it("never drives the bill to zero", () => {
+  it("takes the bill to zero on a 100% coupon — the reclaim case", () => {
     const priced = priceCart(
       [line({ qty: 10 })],
       applied({ type: "percent", percent: 100 }),
       TABLE
     )
     expect(priced.net.sats).toBe(MIN_CHARGE_SATS)
-    expect(priced.discountSats).toBe(1000 - MIN_CHARGE_SATS)
+    expect(priced.net.sats).toBe(0)
+    expect(priced.discountSats).toBe(1000)
   })
 
   it("caps an over-generous fixed discount at the basket's value", () => {
@@ -390,8 +392,8 @@ describe("priceCart", () => {
       applied({ type: "fixed", amount: 100_000, currency: "ARS" }),
       TABLE
     )
-    expect(priced.net.sats).toBe(MIN_CHARGE_SATS)
-    expect(priced.discountExactSats).toBe(100 - MIN_CHARGE_SATS)
+    expect(priced.net.sats).toBe(0)
+    expect(priced.discountExactSats).toBe(100)
   })
 
   it("refuses to guess when the discount's currency has no rate", () => {
@@ -634,5 +636,146 @@ describe("product scope", () => {
   it("round-trips a scope through the columns", () => {
     const benefit: Benefit = { type: "fixed", amount: 500, currency: "ARS", productDs: [D1, D2] }
     expect(benefitFromColumns(benefitToColumns(benefit))).toEqual({ ok: true, value: benefit })
+  })
+})
+
+describe("discountByLine", () => {
+  /**
+   * The per-line split has to add up to what discountEntries says, or the order
+   * book and the invoice tell two different stories about the same sale.
+   */
+  const totalOf = (amounts: readonly number[]) =>
+    amounts.reduce((sum, amount) => sum + amount, 0)
+
+  it("puts free units on their own line, not on the basket", () => {
+    const lines = [line({ d: D1, qty: 2 }), line({ d: D2, qty: 1 })]
+    const benefit: Benefit = { type: "freeItems", items: [{ d: D1, qty: 1 }] }
+
+    expect(discountByLine(lines, benefit)).toEqual([100, 0])
+    expect(totalOf(discountByLine(lines, benefit))).toBe(
+      discountEntries(lines, benefit)[0]!.amount
+    )
+  })
+
+  it("splits a multibuy onto the product that repeats", () => {
+    const lines = [line({ d: D1, qty: 4 }), line({ d: D2, qty: 3 })]
+    const benefit: Benefit = { type: "multibuy", buyQty: 2, payQty: 1, productDs: [D1] }
+
+    // 4 units, 2x1 ⇒ 2 free.
+    expect(discountByLine(lines, benefit)).toEqual([200, 0])
+  })
+
+  it("takes a percentage off every line it is scoped to", () => {
+    const lines = [line({ d: D1, qty: 2 }), line({ d: D2, qty: 1 })]
+
+    expect(discountByLine(lines, { type: "percent", percent: 10 })).toEqual([20, 10])
+    expect(
+      discountByLine(lines, { type: "percent", percent: 10, productDs: [D2] })
+    ).toEqual([0, 10])
+  })
+
+  it("spreads a lump sum only over the lines it can apply to", () => {
+    const lines = [
+      line({ d: D1, qty: 1, unitAmount: 300 }),
+      line({ d: D2, qty: 1, unitAmount: 100 }),
+      line({ d: D3, qty: 1, unitAmount: 5, currency: "USD" }),
+    ]
+    const benefit: Benefit = { type: "fixed", amount: 200, currency: "ARS" }
+
+    // 200 over ARS 400 of eligible basket: 150 / 50, and nothing on the USD row.
+    expect(discountByLine(lines, benefit)).toEqual([150, 50, 0])
+    expect(totalOf(discountByLine(lines, benefit))).toBe(200)
+  })
+
+  it("caps a lump sum at what the scoped products are worth", () => {
+    const lines = [line({ d: D1, qty: 1, unitAmount: 50 }), line({ d: D2, qty: 1 })]
+    const benefit: Benefit = { type: "fixed", amount: 500, currency: "ARS", productDs: [D1] }
+
+    expect(discountByLine(lines, benefit)).toEqual([50, 0])
+  })
+})
+
+describe("tope de descuento", () => {
+  const CAP: Benefit["cap"] = { amount: 500, currency: "ARS" }
+
+  it("holds a percentage to its ceiling", () => {
+    // ARS 10.000 al 20% son 2.000; el tope deja 500.
+    const lines = [line({ qty: 100 })] // ARS 10.000
+    const capped: Benefit = { type: "percent", percent: 20, cap: CAP }
+
+    expect(discountEntries(lines, capped)).toEqual([{ currency: "ARS", amount: 500 }])
+    expect(priceCart(lines, applied(capped), TABLE).net.sats).toBe(9_500)
+  })
+
+  it("leaves a discount that never reaches the ceiling alone", () => {
+    const lines = [line({ qty: 10 })] // ARS 1.000
+    const capped: Benefit = { type: "percent", percent: 20, cap: CAP }
+
+    expect(discountEntries(lines, capped)).toEqual([{ currency: "ARS", amount: 200 }])
+  })
+
+  it("caps every type, not just percentages", () => {
+    const lines = [line({ qty: 2, unitAmount: 2_000 })] // 2 × ARS 2.000
+    const free: Benefit = {
+      type: "freeItems",
+      items: [{ d: D1, qty: 1 }],
+      cap: CAP,
+    }
+
+    // Un producto gratis valdría 2.000; el tope lo deja en 500.
+    expect(discountEntries(lines, free)).toEqual([{ currency: "ARS", amount: 500 }])
+  })
+
+  it("scales the per-line split so it still adds up to the ceiling", () => {
+    const lines = [
+      line({ d: D1, qty: 1, unitAmount: 3_000 }),
+      line({ d: D2, qty: 1, unitAmount: 1_000 }),
+    ]
+    const capped: Benefit = { type: "percent", percent: 50, cap: CAP }
+
+    // Sin tope serían 1.500 y 500; con tope, la misma proporción sobre 500.
+    expect(discountByLine(lines, capped)).toEqual([375, 125])
+    expect(discountByLine(lines, capped).reduce((a, b) => a + b, 0)).toBe(500)
+  })
+
+  it("only clamps its own currency", () => {
+    const lines = [
+      line({ d: D1, qty: 10 }), // ARS 1.000
+      line({ d: D2, qty: 1, unitAmount: 100, currency: "USD" }),
+    ]
+    const capped: Benefit = { type: "percent", percent: 50, cap: CAP }
+
+    expect(discountEntries(lines, capped)).toEqual([
+      { currency: "ARS", amount: 500 },
+      { currency: "USD", amount: 50 },
+    ])
+  })
+
+  it("says the ceiling out loud", () => {
+    expect(describeBenefit({ type: "percent", percent: 20, cap: CAP })).toBe(
+      "20% de descuento (hasta ARS 500)"
+    )
+  })
+
+  it("round-trips through the columns", () => {
+    const back = benefitFromColumns(
+      benefitToColumns({ type: "percent", percent: 20, cap: CAP })
+    )
+    expect(back.ok).toBe(true)
+    if (back.ok) expect(back.value).toEqual({ type: "percent", percent: 20, cap: CAP })
+  })
+
+  it("refuses a ceiling that is not a positive amount in a real currency", () => {
+    const withCap = (cap: unknown) => parseBenefit({ type: "percent", percent: 10, cap })
+    expect(withCap({ amount: 0, currency: "ARS" }).ok).toBe(false)
+    expect(withCap({ amount: -5, currency: "ARS" }).ok).toBe(false)
+    expect(withCap({ amount: 5, currency: "EUR" }).ok).toBe(false)
+    expect(withCap({ amount: 10.5, currency: "SAT" }).ok).toBe(false)
+    expect(withCap({ amount: 10, currency: "SAT" }).ok).toBe(true)
+    // Absent stays absent — a coupon without a ceiling has no key at all.
+    expect(parseBenefit({ type: "percent", percent: 10 })).toEqual({
+      ok: true,
+      value: { type: "percent", percent: 10 },
+    })
   })
 })

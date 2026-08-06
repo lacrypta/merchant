@@ -5,14 +5,18 @@ import { nip19 } from "nostr-tools"
 
 import { GridBackdrop } from "@/components/brand/grid-backdrop"
 import { CartAside } from "@/components/cart/cart-aside"
+import { CurrencyToggle } from "@/components/cart/currency-toggle"
 import { EditStoreButton } from "@/components/storefront/edit-store-button"
-import { HandleSearchForm } from "@/components/storefront/handle-search-form"
 import {
   CatalogSection,
   ProductCountChip,
 } from "@/components/storefront/catalog-section"
 import { CatalogSkeleton } from "@/components/storefront/catalog-skeleton"
-import { CouponChip } from "@/components/storefront/coupon-availability"
+import {
+  CouponChip,
+  CouponSlot,
+  CouponSlotSkeleton,
+} from "@/components/storefront/coupon-availability"
 import { Skeleton } from "@/components/ui/skeleton"
 import { TickerChip } from "@/components/ui/ticker-chip"
 import { getMerchantIdentity } from "@/lib/server/storefront"
@@ -122,6 +126,14 @@ export default async function StorefrontPage({ params }: { params: Params }) {
               </p>
             ) : null}
           </div>
+
+          {/* Every price on this page is quoted in it, so it belongs beside the
+              prices rather than inside the cart it used to hide in. */}
+          <CurrencyToggle className="hidden shrink-0 self-start sm:inline-flex" />
+        </div>
+
+        <div className="mx-auto -mt-2 flex w-full max-w-6xl justify-end px-4 pb-4 sm:hidden">
+          <CurrencyToggle />
         </div>
       </header>
 
@@ -137,14 +149,13 @@ export default async function StorefrontPage({ params }: { params: Params }) {
             </Suspense>
           </div>
 
-          <CartAside />
-        </div>
-
-        <div className="mt-16 border-t border-border pt-8">
-          <p className="mb-3 text-sm text-muted-foreground">Buscar otra tienda</p>
-          <div className="max-w-[560px]">
-            <HandleSearchForm />
-          </div>
+          <CartAside
+            couponSlot={
+              <Suspense fallback={<CouponSlotSkeleton />}>
+                <CouponSlot pubkey={pubkey} relayHints={relayHints} />
+              </Suspense>
+            }
+          />
         </div>
       </div>
     </main>

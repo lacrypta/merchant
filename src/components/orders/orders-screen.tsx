@@ -6,11 +6,11 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
-  CalendarDays,
   ChevronRight,
   Download,
   RefreshCw,
   Search,
+  Ticket,
 } from "lucide-react"
 import * as React from "react"
 
@@ -18,6 +18,18 @@ import { useAuth } from "@/components/auth/auth-provider"
 import { useCatalog } from "@/components/catalog/catalog-provider"
 import { EmptyState } from "@/components/feedback/empty-state"
 import { PageHeader } from "@/components/shell/page-header"
+import { useRedemptions } from "@/components/coupons/use-coupons"
+import {
+  MetricCard,
+  OrderDetailDialog,
+  OriginalTotals,
+  allocationLabel,
+  buildOrderView,
+  formatSats,
+  numberFormatter,
+  shortId,
+  type OrderView,
+} from "@/components/orders/order-detail-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -30,24 +42,15 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { FilterSelect } from "@/components/ui/filter-select"
 import { Input } from "@/components/ui/input"
-import {
-  ResponsiveDialog,
-  ResponsiveDialogClose,
-  ResponsiveDialogContent,
-  ResponsiveDialogDescription,
-  ResponsiveDialogFooter,
-  ResponsiveDialogHeader,
-  ResponsiveDialogTitle,
-} from "@/components/ui/responsive-dialog"
+import { Pager } from "@/components/ui/pager"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useRates } from "@/hooks/use-rates"
 import { KINDS } from "@/lib/domain/kinds"
-import { formatPrice } from "@/lib/domain/price"
+import type { Benefit } from "@/lib/domain/coupon"
 import {
-  allocateOrderLineSats,
   parseZapReceiptOrder,
+  parseZapRequestOrder,
   type AllocatedZapOrderLine,
-  type SatAllocationQuality,
   type ZapOrderTotal,
   type ZapReceiptOrder,
 } from "@/lib/domain/zap-order"
@@ -58,32 +61,18 @@ import { CACHE, qk } from "@/lib/query/keys"
 import { serializeCsv } from "@/lib/csv"
 import { fold } from "@/lib/domain/slug"
 
-const dateFormatter = new Intl.DateTimeFormat("es-AR", {
-  dateStyle: "medium",
-  timeStyle: "short",
-})
 const orderDateFormatter = new Intl.DateTimeFormat("es-AR", {
   dateStyle: "medium",
 })
 const orderTimeFormatter = new Intl.DateTimeFormat("es-AR", {
   timeStyle: "short",
 })
-const numberFormatter = new Intl.NumberFormat("es-AR", {
-  maximumFractionDigits: 2,
-})
+/** Rows per page. Enough that scrolling is the norm and paging the exception. */
+const PAGE_SIZE = 25
 
 type SortKey = "date" | "order" | "sats"
 type SortDirection = "asc" | "desc"
 type PeriodFilter = "all" | "7" | "30" | "90"
-
-interface OrderView {
-  order: ZapReceiptOrder
-  lines: AllocatedZapOrderLine[]
-  quality: SatAllocationQuality
-  itemCount: number
-  totals: ZapOrderTotal[]
-  currencies: string[]
-}
 
 interface ItemReportRow {
   d: string
@@ -94,14 +83,6 @@ interface ItemReportRow {
   estimatedLines: number
   unallocatedLines: number
   totals: ZapOrderTotal[]
-}
-
-function shortId(id: string) {
-  return id.length > 16 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id
-}
-
-function formatSats(value: number | null) {
-  return value === null ? "—" : `${numberFormatter.format(value)} sat`
 }
 
 /**
@@ -126,18 +107,6 @@ function localDateBoundary(value: string, edge: "start" | "end"): number | null 
   return edge === "start"
     ? start.getTime()
     : new Date(year, month, day).getTime() - 1
-}
-
-function aggregateTotals(lines: readonly AllocatedZapOrderLine[]): ZapOrderTotal[] {
-  const totals = new Map<string, number>()
-  for (const line of lines) {
-    if (line.unitAmount === undefined || !line.currency) continue
-    totals.set(
-      line.currency,
-      (totals.get(line.currency) ?? 0) + line.unitAmount * line.qty
-    )
-  }
-  return [...totals].map(([currency, amount]) => ({ currency, amount }))
 }
 
 function mergeTotals(target: Map<string, number>, totals: readonly ZapOrderTotal[]) {
@@ -213,54 +182,46 @@ function SortHeader({
   )
 }
 
-function MetricCard({
+/**
+ * A date filter that matches the selects beside it.
+ *
+ * The native input used to sit under its own caption, which made those two
+ * controls a head taller than every pill next to them — the row aligned at the
+ * bottom and looked ragged at the top. Same shell as FilterSelect instead:
+ * label inside, one height, one shape.
+ *
+ * A bare `input` rather than our `Input`, because that component brings its own
+ * border, height and padding, and undoing all three is more markup than the
+ * element it wraps.
+ */
+function DateFilter({
   label,
   value,
-  note,
-  primary = false,
+  min,
+  max,
+  onChange,
 }: {
   label: string
   value: string
-  note: string
-  primary?: boolean
+  min?: string
+  max?: string
+  onChange: (value: string) => void
 }) {
   return (
-    <div
-      className={`rounded-2xl border p-4 ${
-        primary
-          ? "border-primary/35 bg-primary/5"
-          : "border-border bg-card"
-      }`}
-    >
-      <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+    <label className="flex h-11 min-w-[10.5rem] flex-1 items-center gap-1.5 rounded-full border border-border-strong bg-background px-3.5 shadow-sm transition-[border-color,background-color,box-shadow] hover:bg-muted/55 focus-within:border-primary/60">
+      <span className="shrink-0 text-[0.6875rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
         {label}
-      </p>
-      <p
-        className={`numeric mt-2 text-2xl font-bold tracking-tight ${
-          primary ? "text-primary" : "text-foreground"
-        }`}
-      >
-        {value}
-      </p>
-      <p className="mt-1 text-xs text-muted-foreground">{note}</p>
-    </div>
-  )
-}
-
-function OriginalTotals({ totals }: { totals: readonly ZapOrderTotal[] }) {
-  if (totals.length === 0) return <span className="text-muted-foreground">—</span>
-  return (
-    <div className="flex flex-wrap justify-end gap-1.5">
-      {totals.map((total) => (
-        <Badge
-          key={total.currency}
-          variant="outline"
-          className="numeric border-border-strong"
-        >
-          {formatPrice(total.amount, total.currency)}
-        </Badge>
-      ))}
-    </div>
+      </span>
+      <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
+      <input
+        type="date"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(event) => onChange(event.target.value)}
+        className="numeric min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none [color-scheme:dark]"
+      />
+    </label>
   )
 }
 
@@ -286,192 +247,6 @@ function ItemNames({
   )
 }
 
-function allocationLabel(quality: SatAllocationQuality) {
-  if (quality === "exact") return "Asignación exacta"
-  if (quality === "estimated") return "Sats estimados"
-  return "Sats sin asignar"
-}
-
-function OrderDetailDialog({
-  view,
-  productTitles,
-  onOpenChange,
-}: {
-  view: OrderView | null
-  productTitles: ReadonlyMap<string, string>
-  onOpenChange: (open: boolean) => void
-}) {
-  const open = view !== null
-
-  return (
-    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
-      <ResponsiveDialogContent className="sm:max-w-2xl">
-        {view ? (
-          <>
-            <ResponsiveDialogHeader className="pr-10">
-              <div className="flex flex-wrap items-center gap-2">
-                <ResponsiveDialogTitle>
-                  Orden {shortId(view.order.receipt.id)}
-                </ResponsiveDialogTitle>
-                <Badge className="border-success/30 bg-success-bg text-success">
-                  Cobrada
-                </Badge>
-                {view.quality === "estimated" ? (
-                  <Badge
-                    variant="outline"
-                    className="border-warning/40 text-warning"
-                  >
-                    sats estimados
-                  </Badge>
-                ) : null}
-              </div>
-              <ResponsiveDialogDescription>
-                Recibida {dateFormatter.format(view.order.receipt.created_at * 1000)}
-              </ResponsiveDialogDescription>
-            </ResponsiveDialogHeader>
-
-            <div className="space-y-6">
-              <section
-                aria-label="Resumen de la orden"
-                className="grid gap-3 sm:grid-cols-2"
-              >
-                <MetricCard
-                  label="Cobrado"
-                  value={formatSats(view.order.receiptSats)}
-                  note={allocationLabel(view.quality)}
-                  primary
-                />
-                <MetricCard
-                  label="Unidades"
-                  value={numberFormatter.format(view.itemCount)}
-                  note={`${view.lines.length} líneas de producto`}
-                />
-              </section>
-
-              {/* Without this the numbers do not add up: the item totals are
-                  GROSS, and what the invoice charged is gross minus this. */}
-              {view.order.coupon ? (
-                <section
-                  aria-label="Cupón aplicado"
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surface-2 px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">
-                      Cupón {view.order.coupon.name || view.order.coupon.type}
-                    </p>
-                    <p className="truncate-middle numeric text-xs text-muted-foreground">
-                      {view.order.coupon.id}
-                    </p>
-                  </div>
-                  {view.order.discounts.length > 0 ? (
-                    <p className="numeric text-sm font-bold text-success">
-                      −
-                      {view.order.discounts
-                        .map((d) => formatPrice(d.amount, d.currency))
-                        .join(" − ")}
-                    </p>
-                  ) : null}
-                </section>
-              ) : null}
-
-              <section aria-labelledby="order-items-title">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 id="order-items-title" className="text-h3">
-                    Ítems del pedido
-                  </h3>
-                  <OriginalTotals totals={view.totals} />
-                </div>
-
-                {view.lines.length > 0 ? (
-                  <ul className="overflow-hidden rounded-xl border border-border bg-card divide-y divide-border">
-                    {view.lines.map((line, index) => (
-                      <li
-                        key={`${line.d}-${index}`}
-                        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 px-4 py-3"
-                      >
-                        <p className="min-w-0 truncate text-sm font-semibold">
-                          {productTitles.get(line.d) ??
-                            `Producto ${shortId(line.d)}`}
-                        </p>
-                        <p
-                          className="numeric text-right text-sm font-bold"
-                          title={
-                            view.quality === "estimated"
-                              ? "Estimado con la cotización actual y reconciliado al total del receipt"
-                              : undefined
-                          }
-                        >
-                          {line.sats === null
-                            ? "—"
-                            : `${view.quality === "estimated" ? "≈ " : ""}${formatSats(line.sats)}`}
-                        </p>
-                        <p className="numeric text-xs text-muted-foreground">
-                          Cantidad ×{line.qty}
-                          {line.unitAmount !== undefined && line.currency
-                            ? ` · ${formatPrice(line.unitAmount, line.currency)} c/u`
-                            : ""}
-                        </p>
-                        {line.sats !== null && line.qty > 1 ? (
-                          <p className="numeric text-right text-xs text-muted-foreground">
-                            {view.quality === "estimated" ? "≈ " : ""}
-                            {formatSats(line.sats / line.qty)} c/u
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="rounded-xl border border-dashed border-border-strong px-4 py-5 text-sm text-muted-foreground">
-                    Esta orden no incluye el detalle de ítems dentro del zap
-                    request.
-                  </p>
-                )}
-
-                {view.lines.length === 0 && view.order.itemsCount ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    El request declara {view.order.itemsCount} unidades sin
-                    detalle por línea.
-                  </p>
-                ) : null}
-              </section>
-
-              <section aria-labelledby="order-source-title">
-                <h3 id="order-source-title" className="sr-only">
-                  Referencias de Nostr
-                </h3>
-                <dl className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
-                  <div className="bg-card px-4 py-3">
-                    <dt className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                      Zap receipt
-                    </dt>
-                    <dd className="numeric mt-1 break-all text-xs font-medium">
-                      {view.order.receipt.id}
-                    </dd>
-                  </div>
-                  <div className="bg-card px-4 py-3">
-                    <dt className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                      Zap request
-                    </dt>
-                    <dd className="numeric mt-1 break-all text-xs font-medium">
-                      {view.order.zapRequest?.id ?? "No incluido en el receipt"}
-                    </dd>
-                  </div>
-                </dl>
-              </section>
-            </div>
-
-            <ResponsiveDialogFooter>
-              <ResponsiveDialogClose asChild>
-                <Button variant="outline">Cerrar</Button>
-              </ResponsiveDialogClose>
-            </ResponsiveDialogFooter>
-          </>
-        ) : null}
-      </ResponsiveDialogContent>
-    </ResponsiveDialog>
-  )
-}
-
 export function OrdersScreen() {
   const { state } = useAuth()
   const { products, relayEntries } = useCatalog()
@@ -485,6 +260,7 @@ export function OrdersScreen() {
   const [selectedOrderId, setSelectedOrderId] = React.useState<string | null>(
     null
   )
+  const [page, setPage] = React.useState(1)
   const [sortKey, setSortKey] = React.useState<SortKey>("date")
   const [sortDirection, setSortDirection] =
     React.useState<SortDirection>("desc")
@@ -523,38 +299,63 @@ export function OrdersScreen() {
     ...CACHE.orders,
   })
 
+  // Reclaimed orders never reach a relay; they come from our own database.
+  const { redemptions } = useRedemptions()
+
   const productTitles = React.useMemo(
     () => new Map(products.map((product) => [product.d, product.title])),
     [products]
   )
 
-  const orderViews = React.useMemo<OrderView[]>(
-    () =>
-      (receiptsQuery.data ?? [])
-        .map((receipt) => parseZapReceiptOrder(receipt, pubkey ?? ""))
-        .filter((order): order is ZapReceiptOrder => order !== null)
-        .map((order) => {
-          const allocation = allocateOrderLineSats(
-            order,
-            rates?.satPrice ?? null
-          )
-          const totals =
-            order.totals.length > 0
-              ? order.totals
-              : aggregateTotals(allocation.lines)
-          return {
-            order,
-            lines: allocation.lines,
-            quality: allocation.quality,
-            itemCount:
-              order.itemsCount ??
-              allocation.lines.reduce((sum, line) => sum + line.qty, 0),
-            totals,
-            currencies: [...new Set(totals.map((total) => total.currency))],
-          }
-        }),
-    [receiptsQuery.data, pubkey, rates?.satPrice]
+  /**
+   * What a discounted order's coupon actually promised.
+   *
+   * The zap request only names the coupon (id, type, name) — enough to say
+   * "hubo un cupón", not enough to say which beer was free. The redemption row
+   * carries the terms frozen at mint time, which is what puts the discount on
+   * the right line. Matched by order first; failing that, by coupon, because a
+   * coupon redeemed before this app started filing orders still has its terms.
+   */
+  const benefitFor = React.useCallback(
+    (order: ZapReceiptOrder): Benefit | null => {
+      const couponId = order.coupon?.id
+      if (!couponId) return null
+      const requestId = order.zapRequest?.id
+      const exact = requestId
+        ? redemptions.find((r) => r.orderId === requestId)
+        : undefined
+      return (exact ?? redemptions.find((r) => r.couponId === couponId))?.benefit ?? null
+    },
+    [redemptions]
   )
+
+  const orderViews = React.useMemo<OrderView[]>(() => {
+    const paid = (receiptsQuery.data ?? [])
+      .map((receipt) => parseZapReceiptOrder(receipt, pubkey ?? ""))
+      .map((order) =>
+        order ? buildOrderView(order, rates?.satPrice ?? null, benefitFor(order)) : null
+      )
+      .filter((view): view is OrderView => view !== null)
+
+    /**
+     * Orders a coupon took to zero. They were never invoiced, so no zap receipt
+     * exists and relays have nothing to show — the row written when the coupon
+     * was claimed is the only record there is.
+     *
+     * Only `amountMsat === 0` qualifies. A redemption with something left to pay
+     * belongs to the receipt that will arrive for it; listing it here would post
+     * an order the merchant has not been paid for, and then post it twice.
+     */
+    const receipted = new Set(paid.map((view) => view.order.zapRequest?.id).filter(Boolean))
+    const reclaimed = redemptions
+      .filter((r) => r.amountMsat === 0 && r.order && !receipted.has(r.order.id))
+      .map((r) =>
+        buildOrderView(parseZapRequestOrder(r.order, 0), rates?.satPrice ?? null, r.benefit)
+      )
+      .filter((view): view is OrderView => view !== null)
+
+    return [...paid, ...reclaimed]
+  }, [receiptsQuery.data, redemptions, pubkey, rates?.satPrice, benefitFor])
 
   const currencies = React.useMemo(
     () =>
@@ -566,7 +367,7 @@ export function OrdersScreen() {
 
   const selectedOrder = React.useMemo(
     () =>
-      orderViews.find((view) => view.order.receipt.id === selectedOrderId) ??
+      orderViews.find((view) => view.id === selectedOrderId) ??
       null,
     [orderViews, selectedOrderId]
   )
@@ -581,15 +382,17 @@ export function OrdersScreen() {
     const until = localDateBoundary(untilDate, "end")
 
     const filtered = orderViews.filter((view) => {
-      const receivedAt = view.order.receipt.created_at * 1000
+      const receivedAt = view.receivedAt
       if (receivedAt < cutoff) return false
       if (from !== null && receivedAt < from) return false
       if (until !== null && receivedAt > until) return false
       if (currency !== "all" && !view.currencies.includes(currency)) return false
       if (!normalizedQuery) return true
       const haystack = [
-        view.order.receipt.id,
+        view.id,
         view.order.zapRequest?.id ?? "",
+        view.order.coupon?.name ?? "",
+        view.order.coupon?.id ?? "",
         ...view.lines.flatMap((line) => [
           line.d,
           productTitles.get(line.d) ?? "",
@@ -605,7 +408,7 @@ export function OrdersScreen() {
       let comparison = 0
       switch (sortKey) {
         case "order":
-          comparison = a.order.receipt.id.localeCompare(b.order.receipt.id)
+          comparison = a.id.localeCompare(b.id)
           break
         case "sats":
           comparison =
@@ -614,13 +417,13 @@ export function OrdersScreen() {
           break
         case "date":
           comparison =
-            a.order.receipt.created_at - b.order.receipt.created_at
+            a.receivedAt - b.receivedAt
           break
       }
       return (
         comparison * direction ||
-        b.order.receipt.created_at - a.order.receipt.created_at ||
-        a.order.receipt.id.localeCompare(b.order.receipt.id)
+        b.receivedAt - a.receivedAt ||
+        a.id.localeCompare(b.id)
       )
     })
   }, [
@@ -635,6 +438,23 @@ export function OrdersScreen() {
     productTitles,
     now,
   ])
+
+  /**
+   * The rows actually on screen.
+   *
+   * Only the TABLE is paginated. The metrics, the per-product report and the
+   * CSV all keep working over the whole filtered set — a merchant asking "how
+   * much did I take this month" wants the month, not whichever 25 orders the
+   * pager happens to be showing.
+   *
+   * The page is clamped rather than reset by an effect: filtering down to
+   * fewer pages while sitting on page 6 should show the last page, not an
+   * empty table, and doing it here means no render ever sees the stale number.
+   */
+  const pageCount = Math.max(1, Math.ceil(filteredOrders.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const pageStart = (currentPage - 1) * PAGE_SIZE
+  const pageOrders = filteredOrders.slice(pageStart, pageStart + PAGE_SIZE)
 
   const reportRows = React.useMemo<ItemReportRow[]>(() => {
     const rows = new Map<
@@ -718,8 +538,15 @@ export function OrdersScreen() {
 
   const maxReportQty = reportRows[0]?.qty ?? 0
 
+  /**
+   * Anything that changes WHICH orders are listed sends the reader back to page
+   * one. Filtering while parked on page 4 and landing on a page that no longer
+   * holds what you were looking at is the classic pagination bug; the clamp
+   * above only saves you from an empty table, not from a confusing one.
+   */
   const handleSort = React.useCallback(
     (nextKey: SortKey) => {
+      setPage(1)
       if (nextKey === sortKey) {
         setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
       } else {
@@ -731,6 +558,7 @@ export function OrdersScreen() {
   )
 
   const resetFilters = () => {
+    setPage(1)
     setQuery("")
     setCurrency("all")
     setPeriod("all")
@@ -738,13 +566,32 @@ export function OrdersScreen() {
     setUntilDate("")
   }
 
+  const updateQuery = (value: string) => {
+    setPage(1)
+    setQuery(value)
+  }
+
+  const updateCurrency = (value: string) => {
+    setPage(1)
+    setCurrency(value)
+  }
+
+  const updatePeriod = (value: PeriodFilter) => {
+    setPage(1)
+    setPeriod(value)
+    setFromDate("")
+    setUntilDate("")
+  }
+
   const updateFromDate = (value: string) => {
+    setPage(1)
     setFromDate(value)
     if (value) setPeriod("all")
     if (value && untilDate && value > untilDate) setUntilDate(value)
   }
 
   const updateUntilDate = (value: string) => {
+    setPage(1)
     setUntilDate(value)
     if (value) setPeriod("all")
     if (value && fromDate && value < fromDate) setFromDate(value)
@@ -754,17 +601,19 @@ export function OrdersScreen() {
     const csv = serializeCsv(
       [
         "Fecha y hora (ISO)",
-        "Zap receipt ID",
+        "Orden ID",
         "Zap request ID",
         "Ítems",
         "Unidades",
         "Total (sats)",
         "Monedas originales",
+        "Cupón",
+        "Descuento",
         "Calidad de asignación",
       ],
       filteredOrders.map((view) => [
-        new Date(view.order.receipt.created_at * 1000).toISOString(),
-        view.order.receipt.id,
+        new Date(view.receivedAt).toISOString(),
+        view.id,
         view.order.zapRequest?.id,
         view.lines.length > 0
           ? view.lines
@@ -775,8 +624,10 @@ export function OrdersScreen() {
               .join(" | ")
           : "Sin detalle",
         view.itemCount,
-        view.order.receiptSats,
+        view.source === "claim" ? 0 : view.order.receiptSats,
         exportTotals(view.totals),
+        view.order.coupon ? view.order.coupon.name || view.order.coupon.type : "",
+        exportTotals(view.order.discounts),
         allocationLabel(view.quality),
       ])
     )
@@ -960,17 +811,17 @@ export function OrdersScreen() {
                 />
                 <Input
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => updateQuery(event.target.value)}
                   placeholder="Buscar orden o producto…"
                   aria-label="Buscar órdenes"
                   className="h-11 rounded-full pl-10"
                 />
               </div>
-              <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <FilterSelect
                   label="Moneda"
                   value={currency}
-                  onValueChange={setCurrency}
+                  onValueChange={updateCurrency}
                   options={[
                     { value: "all", label: "Todas las monedas" },
                     ...currencies.map((code) => ({ value: code, label: code })),
@@ -979,11 +830,7 @@ export function OrdersScreen() {
                 <FilterSelect
                   label="Período"
                   value={period}
-                  onValueChange={(value) => {
-                    setPeriod(value as PeriodFilter)
-                    setFromDate("")
-                    setUntilDate("")
-                  }}
+                  onValueChange={(value) => updatePeriod(value as PeriodFilter)}
                   options={[
                     { value: "all", label: "Todo el historial" },
                     { value: "7", label: "Últimos 7 días" },
@@ -991,47 +838,46 @@ export function OrdersScreen() {
                     { value: "90", label: "Últimos 90 días" },
                   ]}
                 />
-                <fieldset className="grid grid-cols-2 gap-2" aria-label="Rango exacto de fechas">
-                  <label className="min-w-32">
-                    <span className="mb-1 flex items-center gap-1 pl-1 text-[0.6875rem] font-medium text-muted-foreground">
-                      <CalendarDays className="size-3" aria-hidden />
-                      Desde
-                    </span>
-                    <Input
-                      type="date"
-                      value={fromDate}
-                      max={untilDate || undefined}
-                      onChange={(event) => updateFromDate(event.target.value)}
-                      className="h-11 rounded-full px-3 text-sm [color-scheme:dark]"
-                    />
-                  </label>
-                  <label className="min-w-32">
-                    <span className="mb-1 block pl-1 text-[0.6875rem] font-medium text-muted-foreground">
-                      Hasta
-                    </span>
-                    <Input
-                      type="date"
-                      value={untilDate}
-                      min={fromDate || undefined}
-                      onChange={(event) => updateUntilDate(event.target.value)}
-                      className="h-11 rounded-full px-3 text-sm [color-scheme:dark]"
-                    />
-                  </label>
+                <fieldset
+                  className="flex flex-wrap gap-2"
+                  aria-label="Rango exacto de fechas"
+                >
+                  <DateFilter
+                    label="Desde"
+                    value={fromDate}
+                    max={untilDate || undefined}
+                    onChange={updateFromDate}
+                  />
+                  <DateFilter
+                    label="Hasta"
+                    value={untilDate}
+                    min={fromDate || undefined}
+                    onChange={updateUntilDate}
+                  />
                 </fieldset>
                 {query ||
                 currency !== "all" ||
                 period !== "all" ||
                 fromDate ||
                 untilDate ? (
-                  <Button variant="ghost" size="sm" onClick={resetFilters}>
+                  <Button
+                    variant="ghost"
+                    className="h-11 rounded-full"
+                    onClick={resetFilters}
+                  >
                     Limpiar
                   </Button>
                 ) : null}
               </div>
             </div>
             <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
-              Mostrando {filteredOrders.length} de {orderViews.length} órdenes.
-              El rango de fechas incluye ambos días y también actualiza el
+              {filteredOrders.length > 0
+                ? `Mostrando ${pageStart + 1}–${pageStart + pageOrders.length} de ${filteredOrders.length} órdenes`
+                : "Mostrando 0 órdenes"}
+              {filteredOrders.length !== orderViews.length
+                ? ` (${orderViews.length} en total)`
+                : ""}
+              . El rango de fechas incluye ambos días y también actualiza el
               reporte.
             </p>
           </section>
@@ -1101,17 +947,17 @@ export function OrdersScreen() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {filteredOrders.map((view) => (
+                        {pageOrders.map((view) => (
                           <tr
-                            key={view.order.receipt.id}
+                            key={view.id}
                             role="button"
                             tabIndex={0}
-                            aria-label={`Abrir orden ${shortId(view.order.receipt.id)}`}
-                            onClick={() => setSelectedOrderId(view.order.receipt.id)}
+                            aria-label={`Abrir orden ${shortId(view.id)}`}
+                            onClick={() => setSelectedOrderId(view.id)}
                             onKeyDown={(event) => {
                               if (event.key === "Enter" || event.key === " ") {
                                 event.preventDefault()
-                                setSelectedOrderId(view.order.receipt.id)
+                                setSelectedOrderId(view.id)
                               }
                             }}
                             className="group cursor-pointer align-top outline-none transition-colors hover:bg-surface-2/60 focus-visible:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring"
@@ -1120,18 +966,18 @@ export function OrdersScreen() {
                               <span className="flex items-start gap-2">
                                 <time
                                   dateTime={new Date(
-                                    view.order.receipt.created_at * 1000
+                                    view.receivedAt
                                   ).toISOString()}
                                   className="leading-tight"
                                 >
                                   <span className="block">
                                     {orderDateFormatter.format(
-                                      view.order.receipt.created_at * 1000
+                                      view.receivedAt
                                     )}
                                   </span>
                                   <span className="numeric mt-1 block text-xs text-muted-foreground">
                                     {orderTimeFormatter.format(
-                                      view.order.receipt.created_at * 1000
+                                      view.receivedAt
                                     )}
                                   </span>
                                 </time>
@@ -1144,14 +990,34 @@ export function OrdersScreen() {
                             <td className="px-4 py-4">
                               <p
                                 className="numeric text-sm font-semibold"
-                                title={view.order.receipt.id}
+                                title={view.id}
                               >
-                                {shortId(view.order.receipt.id)}
+                                {shortId(view.id)}
                               </p>
                               <div className="mt-1 flex flex-wrap gap-1">
-                                <Badge className="border-success/30 bg-success-bg text-success">
-                                  Cobrada
-                                </Badge>
+                                {view.source === "claim" ? (
+                                  <Badge className="border-primary/30 bg-primary/10 text-primary">
+                                    Reclamada
+                                  </Badge>
+                                ) : (
+                                  <Badge className="border-success/30 bg-success-bg text-success">
+                                    Cobrada
+                                  </Badge>
+                                )}
+                                {/* The coupon on the row, not just inside the
+                                    dialog: the merchant reconciling the day
+                                    needs to see which sales were discounted
+                                    without opening every one of them. */}
+                                {view.order.coupon ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="max-w-40 truncate border-border-strong"
+                                    title={view.order.coupon.id}
+                                  >
+                                    <Ticket className="size-3" aria-hidden />
+                                    {view.order.coupon.name || view.order.coupon.type}
+                                  </Badge>
+                                ) : null}
                                 {view.quality === "estimated" ? (
                                   <Badge
                                     variant="outline"
@@ -1178,7 +1044,9 @@ export function OrdersScreen() {
                             </td>
                             <td className="px-4 py-4 text-right">
                               <p className="numeric whitespace-nowrap text-sm font-bold">
-                                {formatSats(view.order.receiptSats)}
+                                {view.source === "claim"
+                                  ? "Sin cargo"
+                                  : formatSats(view.order.receiptSats)}
                               </p>
                               <div className="mt-1">
                                 <OriginalTotals totals={view.totals} />
@@ -1189,8 +1057,13 @@ export function OrdersScreen() {
                       </tbody>
                       <tfoot className="border-t border-border bg-surface-2 text-sm font-semibold">
                         <tr>
+                          {/* The filtered set, not the page: the metrics above
+                              and the report below count the same rows, and a
+                              footer that changed with the pager would be the
+                              only number on screen answering a question nobody
+                              asked. */}
                           <td className="px-4 py-3" colSpan={3}>
-                            Total visible
+                            Total filtrado
                           </td>
                           <td className="px-4 py-3 text-right">
                             <p className="numeric whitespace-nowrap text-primary">
@@ -1204,6 +1077,13 @@ export function OrdersScreen() {
                       </tfoot>
                     </table>
                   </div>
+
+                  <Pager
+                    page={currentPage}
+                    pageCount={pageCount}
+                    onPage={setPage}
+                    label="Paginación de órdenes"
+                  />
                 </div>
               </section>
 

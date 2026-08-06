@@ -10,8 +10,11 @@ import {
   type VoucherPhase,
 } from "@/lib/domain/coupon"
 import type { SignedEvent } from "@/lib/nostr/types"
+import { KINDS } from "@/lib/domain/kinds"
+import { firstTag } from "@/lib/nostr/tags"
+import { verifySignedEvent } from "@/lib/nostr/verify"
 import { getCouponManager, type CouponManager } from "@/lib/server/coupon-manager"
-import type { DefinitionWithCounts } from "@/lib/server/coupon-store"
+import type { ClaimRow, ClaimedOrder, DefinitionWithCounts } from "@/lib/server/coupon-store"
 import { getDb, type Db } from "@/lib/server/db"
 import { parseNip05, resolveNip05 } from "@/lib/server/nip05"
 import type { CouponDefinitionRow, CouponMintRow, CouponMinterRow } from "@/lib/server/db/schema"
@@ -324,6 +327,71 @@ export function toMintJson(row: CouponMintRow): MintJson {
     mintedAt: seconds(row.mintedAt) ?? 0,
     claimedAt: seconds(row.claimedAt),
     voidedAt: seconds(row.voidedAt),
+  }
+}
+
+/** Same ceiling api/ln/invoice puts on a zap request. */
+const MAX_ORDER_CHARS = 8000
+
+/**
+ * The order the caller says this coupon paid for, if we can believe it.
+ *
+ * Believing it means: a real signed kind-9734 that carries this coupon's own
+ * tag, and an amount that is a number. Everything else is dropped rather than
+ * rejected — see the call site. What this deliberately does NOT do is check who
+ * signed it: the checkout signs zap requests with a throwaway key, so the only
+ * identity here is the nonce the caller already proved they hold.
+ */
+export function parseClaimedOrder(zapRequest: unknown, amountMsat: unknown): ClaimedOrder | undefined {
+  if (zapRequest === undefined || zapRequest === null) return undefined
+  if (!Number.isSafeInteger(amountMsat) || (amountMsat as number) < 0) return undefined
+
+  let event: SignedEvent
+  try {
+    event = (typeof zapRequest === "string" ? JSON.parse(zapRequest) : zapRequest) as SignedEvent
+  } catch {
+    return undefined
+  }
+
+  if (!event || typeof event !== "object") return undefined
+  if (event.kind !== KINDS.ZAP_REQUEST) return undefined
+  if (JSON.stringify(event).length > MAX_ORDER_CHARS) return undefined
+  if (!firstTag(event, "coupon")) return undefined
+
+  try {
+    if (!verifySignedEvent(event)) return undefined
+  } catch {
+    return undefined
+  }
+
+  return { event, amountMsat: amountMsat as number }
+}
+
+/** One redemption, with what it bought. See couponMints.orderEvent. */
+export interface RedemptionJson {
+  nonce: string
+  claimedAt: number
+  couponId: string
+  name: string
+  /** The mint's frozen snapshot, not the definition's current terms. */
+  benefit: Benefit | null
+  /** The signed kind-9734, or null for a coupon redeemed outside our checkout. */
+  order: SignedEvent | null
+  orderId: string | null
+  /** `0` means it was reclaimed, not paid — there will never be a receipt. */
+  amountMsat: number | null
+}
+
+export function toRedemptionJson(row: ClaimRow): RedemptionJson {
+  return {
+    nonce: row.mint.nonce,
+    claimedAt: seconds(row.mint.claimedAt) ?? 0,
+    couponId: row.definition.id,
+    name: row.definition.name,
+    benefit: row.mint.benefit ?? null,
+    order: row.mint.orderEvent,
+    orderId: row.mint.orderId,
+    amountMsat: row.mint.amountMsat,
   }
 }
 

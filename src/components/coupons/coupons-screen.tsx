@@ -13,6 +13,7 @@ import {
 } from "@/components/coupons/coupon-mint-dialog"
 import { ManagerCard } from "@/components/coupons/manager-card"
 import { MintersSection } from "@/components/coupons/minters-section"
+import { RedemptionsSection } from "@/components/coupons/redemptions-section"
 import { useCouponService } from "@/components/coupons/use-coupon-service"
 import { useCoupons, type CouponJson } from "@/components/coupons/use-coupons"
 import { PageHeader } from "@/components/shell/page-header"
@@ -165,6 +166,9 @@ export function CouponsScreen() {
           <TabTrigger value="coupons" disabled={!service.isActive}>
             Cupones
           </TabTrigger>
+          <TabTrigger value="redemptions" disabled={!service.isActive}>
+            Canjeados
+          </TabTrigger>
           <TabTrigger value="minters" disabled={!service.isActive}>
             Autorizados
           </TabTrigger>
@@ -205,6 +209,10 @@ export function CouponsScreen() {
           )}
         </TabsContent>
 
+        <TabsContent value="redemptions" className="pt-5">
+          <RedemptionsSection />
+        </TabsContent>
+
         <TabsContent value="minters" className="pt-5">
           {error ? (
             <ErrorNotice message={error.message} />
@@ -231,16 +239,23 @@ export function CouponsScreen() {
         <ResponsiveDialogContent className="sm:max-w-2xl">
           <ResponsiveDialogHeader>
             <ResponsiveDialogTitle>{viewing?.name}</ResponsiveDialogTitle>
+            {/* The coupon's own words. Its TERMS live in the panel below, so
+                repeating them here would print the same line twice. */}
             <ResponsiveDialogDescription>
-              {viewing?.benefit
-                ? describeBenefit(viewing.benefit, titleOf)
-                : "Cupones emitidos"}
+              {viewing?.description || "Condiciones y cupones emitidos"}
             </ResponsiveDialogDescription>
           </ResponsiveDialogHeader>
 
           {/* Keyed so opening a different coupon refetches instead of showing
               the previous one's list for a frame. */}
-          {viewing ? <CouponMintsPanel key={viewing.id} coupon={viewing} /> : null}
+          {viewing ? (
+            <CouponMintsPanel
+              key={viewing.id}
+              coupon={viewing}
+              titleOf={titleOf}
+              now={now}
+            />
+          ) : null}
         </ResponsiveDialogContent>
       </ResponsiveDialog>
 
@@ -546,7 +561,7 @@ function EmptyState({
   )
 }
 
-type CouponTab = "coupons" | "minters" | "status"
+type CouponTab = "coupons" | "redemptions" | "minters" | "status"
 
 /** A tab that says why it is locked instead of just being dead to the touch. */
 function TabTrigger({

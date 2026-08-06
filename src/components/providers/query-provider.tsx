@@ -100,7 +100,10 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
           shouldDehydrateQuery: (q) =>
             q.state.status === "success" &&
             q.state.data !== undefined &&
-            q.queryKey[0] !== "coupons",
+            q.queryKey[0] !== "coupons" &&
+            // Same rule, and more so: a redemption carries what somebody
+            // bought.
+            q.queryKey[0] !== "coupon-redemptions",
         },
       }}
     >
