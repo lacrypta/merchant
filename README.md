@@ -63,13 +63,21 @@ Decisiones que no son obvias y conviene no revertir sin leer el porqué:
 
 ## Cupones
 
-Cinco tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), **comprá A, llevate B gratis**, y **producto gratis** (los productos y cantidades que elijas, sin comprar nada a cambio). Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra.
+Cinco tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), **comprá A, llevate B gratis**, y **producto gratis** (los productos y cantidades que elijas, sin comprar nada a cambio). Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra. Cualquiera de los cinco acepta un **tope de descuento** opcional — "20% de descuento, hasta ARS 5.000".
 
 El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
 
 Es la única parte de la app con base de datos, y el motivo es corto: *"¿este cupón ya se usó?"* tiene que tener una sola respuesta en el instante en que dos cajas la preguntan, y los relays son consistentes-eventualmente por diseño.
 
-📄 **[Documentación completa: `docs/cupones.md`](docs/cupones.md)** — los cuatro tipos y su aritmética, los dos eventos de nostr (anuncio y voucher), todos los endpoints con sus formas, NIP-98, y los flujos de punta a punta.
+📄 **Documentación completa** — [`docs/cupones.md`](docs/cupones.md) es la portada, y desde ahí:
+
+| | |
+|---|---|
+| [Descuentos](docs/cupones-descuentos.md) | Los cinco tipos, el alcance por producto, el tope y la aritmética |
+| [API](docs/cupones-api.md) | Cada endpoint con su cuerpo, su respuesta y sus errores, y el esquema de cada tipo |
+| [Eventos de nostr](docs/cupones-nostr.md) | El anuncio (30078) y el voucher (20402), y cómo verificarlos |
+| [Flujos](docs/cupones-flujos.md) | De punta a punta, y las decisiones que conviene no revertir |
+| [Datos](docs/cupones-datos.md) | Las cuatro tablas y qué garantiza cada columna |
 
 ```bash
 docker run -d --name merchant-pg -p 55432:5432 \

@@ -12,7 +12,7 @@ import { mintSessionToken } from "@/lib/server/session-token"
  * round trip and a tap on a phone, and the coupons page used to spend one per
  * request. See session-token.ts for what that trade costs.
  *
- * NOT under /api/coupons: every path there is documented in docs/cupones.md as
+ * NOT under /api/coupons: every path there is documented in docs/cupones-api.md as
  * part of the contract a merchant advertises to third-party tills, and this is
  * not a coupon endpoint. It also needs no database, so it must not import the
  * module that reaches for one.
