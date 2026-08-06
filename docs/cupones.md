@@ -58,6 +58,16 @@ Con lista:
 
 `buyXgetY` no lleva `productDs` porque ya nombra sus dos productos.
 
+### Tope de descuento
+
+Cualquiera de los cinco acepta además un **`cap`** opcional: `{ amount, currency }`. Es "20% de descuento, hasta ARS 5.000", y es lo que hace que un porcentaje se pueda repartir sin miedo — sin tope, un solo carrito grande se lleva puesto todo el presupuesto de la promo.
+
+Va en **todos** los tipos a propósito: un 2x1 sobre un cajón de vino y un producto gratis caro necesitan el mismo freno, y tenerlo sólo en `percent` sería un agujero arbitrario.
+
+El tope **acota la entrada de su propia moneda y deja el resto** — la misma regla que ya sigue `fixed`, y por el mismo motivo: convertir necesitaría la tabla de cotizaciones que esa capa deliberadamente no toma, y adivinar un número es peor que aplicar el techo donde fue escrito. Todo carrito real es de una sola moneda, donde esto es exactamente "hasta ARS 5.000".
+
+En el libro de órdenes el tope se reparte **escalado** entre las líneas (`discountByLine`), no cortado de la primera: el techo es una propiedad del descuento entero, y descontárselo a un producto en particular reportaría que ese producto absorbió un recorte que no tuvo.
+
 ### Producto gratis (`freeItems`)
 
 El único beneficio **sin condición de compra**: el cupón *es* el producto. Se elige una lista de productos con su cantidad — `[{ d, qty }]` — y esas unidades salen del total.
@@ -76,7 +86,8 @@ La diferencia con `buyXgetY` es la condición: aquel exige que el producto pagad
 Viven en `priceCart()` y son las que evitan cobrar mal:
 
 - **El redondeo pasa una sola vez, sobre el carrito ya descontado.** Es la regla de [`rates.ts`](../src/lib/domain/rates.ts): un total es el techo de la suma, nunca la suma de los techos. Por eso el descuento se aplica **escalando** cada subtotal por el mismo factor en vez de restar de una moneda — en un carrito mixto, restar de la fila en ARS dejaría el desglose sin sumar al total en sats.
-- **Nunca se llega a cero.** Queda `MIN_CHARGE_SATS` (1 sat) en la factura: una factura de cero sats no es pagable, las billeteras la rechazan y LNURL declara un `minSendable` de al menos 1.
+- **Se puede llegar a cero.** `MIN_CHARGE_SATS` es 0. Una factura de cero sats sigue sin ser pagable — las billeteras la rechazan y LNURL declara un `minSendable` de al menos 1 — así que un total en cero **no genera factura**: el checkout cambia "Generar factura" por **"Reclamar"** y el canje del cupón pasa a ser el registro del pedido (§5.3).
+- **El tope se aplica antes que todo lo demás.** `discountEntries` ya devuelve la entrada acotada, así que la conversión a sats y el clamp contra el valor del carrito trabajan sobre el número que el cupón realmente promete.
 - **Un descuento que no se puede convertir no se adivina.** Si falta la cotización de una moneda, el cupón no aplica y se dice por qué.
 
 Cuando el cupón no aplica, `unmet` explica el motivo: `empty-cart`, `unquotable` o `needs-products`. Este último trae `anyOf`, que distingue "alcanza con uno de estos" (porcentaje o monto acotados) de "hacen falta los dos" (`buyXgetY`).
@@ -164,6 +175,7 @@ Todos con CORS abierto (`Authorization` incluido en el preflight, que no es un h
 | `PATCH /api/coupons/{id}` | NIP-98 o Bearer | Editar |
 | `DELETE /api/coupons/{id}` | NIP-98 o Bearer | Borra si nunca se emitió; si no, archiva |
 | `GET /api/coupons/{id}/mints` | NIP-98 o Bearer | Las emisiones de ese cupón |
+| `GET /api/coupons/redemptions` | NIP-98 o Bearer | Los canjes, con la orden que pagó cada uno |
 | `DELETE /api/coupons/{id}/mints/{nonce}` | NIP-98 o Bearer | Anular una emisión sin canjear |
 | `POST /api/coupons/minters` | NIP-98 o Bearer | Autorizar un npub, nprofile, hex o NIP-05 |
 | `DELETE /api/coupons/minters/{pubkey}` | NIP-98 o Bearer | Revocar |
@@ -238,7 +250,10 @@ El nonce son 16 bytes al azar en base64url (22 caracteres): imposible de adivina
 
 **`GET /api/coupons/claim?nonce=…`** consulta sin consumir. Siempre `200` para un nonce conocido, con el motivo en `status`: `minted`, `claimed`, `expired` o `voided`. Es un endpoint de previsualización: un error HTTP haría que todos esos casos parezcan una falla de red.
 
-**`POST /api/coupons/claim`** con `{ "nonce": "…" }` consume:
+**`POST /api/coupons/claim`** con `{ "nonce": "…", "zapRequest": …, "amountMsat": … }` consume:
+
+`zapRequest` y `amountMsat` son opcionales y describen **qué se está comprando**: el kind-9734 firmado y lo que se iba a cobrar. Se guardan en la misma fila del canje, y son el único registro que existe de un pedido reclamado (§5.3). Un evento que no verifica — firma inválida, kind equivocado, sin tag `coupon`, más de 8000 caracteres — **no frena el canje**: se canjea igual y se pierde nada más que el registro. Negarle el cupón a alguien que está en el mostrador porque no pudimos archivar el papeleo es el peor de los resultados posibles.
+
 
 - `200` `status: "success"` — recién canjeado, con `voucher` en fase `claimed`
 - `200` `status: "claimed"` — ya estaba canjeado, con el `claimedAt` **original**
@@ -249,12 +264,15 @@ Que "ya canjeado" sea 200 y no un error es a propósito: un POS que perdió la r
 La concurrencia la decide la base, no este proceso:
 
 ```sql
-UPDATE coupon_mints SET status='claimed', claimed_at=now()
+UPDATE coupon_mints SET status='claimed', claimed_at=now(),
+       order_event = $2, order_id = $3, amount_msat = $4
  WHERE nonce = $1 AND status = 'minted' AND EXISTS (… no vencido …)
 RETURNING *;
 ```
 
 Dos cajas escaneando el mismo QR en el mismo instante producen un UPDATE que devuelve fila y otro que no. El segundo se reporta como ya canjeado. Un read-then-write sería una carrera con plata del otro lado.
+
+La orden viaja en **ese mismo** UPDATE: una fila no puede quedar canjeada sin la orden que la canjeó, y el segundo llamador — que por definición perdió la carrera — no puede pisar la orden del primero con la suya.
 
 ### 4.5 Anulación
 
@@ -317,8 +335,10 @@ El checkout no necesita el anuncio: llama a sus propios endpoints.
 1. El comprador pega el nonce (o llega con `?coupon=<nonce>`).
 2. **`GET claim`** valida sin consumir. Se chequea que el cupón sea **de esta tienda** — un despliegue sirve a muchos comercios y el endpoint responde por cualquier nonce que conozca; sin ese chequeo alguien podría llevar un 50% de un local a otro.
 3. El descuento se muestra en el total. Todavía no se consumió nada.
-4. Al tocar "Generar factura", **`POST claim`** lo consume *antes* de pedir la factura. Si otro lo usó en el medio, se avisa y se saca del carrito.
+4. Al tocar "Generar factura", se firma el zap request (es local, no toca la red) y **`POST claim`** consume el cupón *antes* de pedir la factura, llevándose la orden firmada. Si otro lo usó en el medio, se avisa y se saca del carrito.
 5. El cupón queda en la orden como tags del zap request: `["coupon", id, tipo, nombre]` y un `["discount", monto, moneda]` por moneda. Los tags `total` siguen siendo **brutos**: bruto − descuento = pagado.
+
+**Si el total queda en cero**, el botón dice **"Reclamar"** y no hay factura, ni pago, ni recibo que esperar: el canje se hace igual (con `amountMsat: 0`) y la orden queda `claimed`. Esa fila es el único registro del pedido, y es lo que hace que aparezca en `/admin/orders` con el badge *Reclamada* y en la pestaña **Canjeados** de `/admin/coupons`. Sin cupón aplicado el botón queda deshabilitado: no habría nonce contra el cual registrar nada.
 
 Si el comprador canjea y después abandona sin pagar, el cupón se quemó. Es un trade-off aceptado: canjear antes de facturar es mejor que facturar un descuento que después no se puede cobrar. El comerciante emite otro.
 
@@ -334,6 +354,10 @@ Una vez **pagada** la orden, se borra del `localStorage`. El recibo sigue en pan
 - **Archivar frena la emisión, no el canje.** Los que ya se entregaron eran una promesa del comercio. Para cortarlos, fecha de vencimiento pasada.
 - **Anular conserva la fila.** Borrarla haría que una caja lea "no existe" en lugar de "fue anulado".
 - **Los tags `total` del pedido van BRUTOS**, con el descuento aparte en `["coupon", …]` y `["discount", …]`. Así el libro de órdenes se lee como un ticket: ítems, menos cupón, igual lo cobrado.
+- **La orden se archiva en el canje, no después.** No hay tabla de órdenes: una orden pagada se reconstruye del zap receipt, y una reclamada no tiene receipt porque nadie la pagó. Si el `POST claim` no se la lleva, no existe en ningún lado.
+- **Un `zapRequest` inválido no cancela el canje.** Se pierde el registro, no el cupón del cliente.
+- **`amount_msat = 0` es lo que marca una orden reclamada.** Es lo que distingue "nunca va a tener recibo" de "todavía no llegó", y sin eso el libro de órdenes mostraría como cobrada una compra que el comprador abandonó.
+- **El libro de órdenes imputa el descuento a la línea que lo recibió**, aunque el checkout cobre un solo total. Un cupón de una cerveza gratis se lleva el precio de una cerveza, no una tajada de cada ítem: repartirlo proporcionalmente deja a cada producto con una facturación que nunca tuvo. `discountByLine` hace ese reparto y `allocateOrderLineSats` pondera por el neto.
 - **El descuento escala cada subtotal por el mismo factor** en lugar de restarse de una moneda. En un carrito de una sola moneda es resta exacta; en uno mixto es lo único que deja el desglose en pesos sumando al total en sats.
 
 ---
@@ -342,14 +366,16 @@ Una vez **pagada** la orden, se borra del `localStorage`. El recibo sigue en pan
 
 Cuatro tablas ([`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts)):
 
-- **`coupon_definitions`** — el cupón: dueño, nombre, descripción, imagen, tipo y sus columnas, `product_ds`, `free_items`, `max_uses`, `minted_count`, `expires_at`, `archived_at`.
-- **`coupon_mints`** — cada emisión: `nonce` único, **`benefit` congelado en jsonb**, quién emitió, estado (`minted` | `claimed` | `voided`) y sus timestamps.
+- **`coupon_definitions`** — el cupón: dueño, nombre, descripción, imagen, tipo y sus columnas, `product_ds`, `free_items`, `cap_amount` + `cap_currency` (el tope, ambas nulas o ambas puestas), `max_uses`, `minted_count`, `expires_at`, `archived_at`.
+- **`coupon_mints`** — cada emisión: `nonce` único, **`benefit` congelado en jsonb**, quién emitió, estado (`minted` | `claimed` | `voided`) y sus timestamps. Al canjear se agrega **la orden**: `order_event` (el kind-9734 firmado, verbatim), `order_id` (indexado) y `amount_msat`.
 - **`coupon_minters`** — qué npubs pueden emitir los cupones de cada dueño.
 - **`coupon_discovery`** — el anuncio firmado, una fila por comerciante.
 
 El beneficio vive en **columnas tipadas y anulables**, no en un jsonb único: así la tabla se lee, se indexa y se corrige con SQL a mano cuando algo se rompe a las 3 de la mañana. `parseBenefit` es lo que garantiza que para cada `type` esté poblado el subconjunto correcto. Las dos excepciones son listas y por eso son jsonb: `product_ds` (el alcance) y `free_items` (los `{ d, qty }` que se regalan). Son columnas distintas a propósito — una **acota** un descuento y la otra **es** el descuento, y compartirlas obligaría a mirar `type` antes de saber cuál de las dos cosas estás leyendo.
 
 **Por qué el beneficio se congela en la emisión:** editar un cupón cambia la definición, pero el voucher que el manager ya firmó dice otra cosa. El canje sirve el snapshot, así que un cupón en el teléfono de alguien vale lo que decía cuando se lo dieron.
+
+**La orden cuelga del canje** porque no hay otra tabla donde ponerla. Todo lo demás vive en relays, y una orden pagada se reconstruye de su zap receipt — pero un cupón que lleva el total a cero no produce factura, y por lo tanto tampoco recibo. `order_id` está indexado para poder responder "¿qué cupón pagó la orden X?" sin escanear jsonb. Las tres columnas son anulables: un cupón canjeado en el mostrador no pasó por ningún checkout.
 
 `archived_at` frena **sólo las emisiones nuevas**; lo que ya está en la calle se sigue canjeando, porque fue una promesa que el comerciante hizo. Para cortar lo que está afuera, se pone `expiresAt` en el pasado. La FK de `coupon_mints` es `ON DELETE RESTRICT`, así que un cupón con emisiones no se puede borrar: se archiva.
 

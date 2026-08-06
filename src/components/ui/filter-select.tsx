@@ -42,7 +42,10 @@ function FilterSelect({
       <SelectTrigger
         aria-label={label}
         className={cn(
-          "h-11 min-w-[11.5rem] rounded-full border-border-strong bg-background px-3.5 shadow-sm transition-[border-color,background-color,box-shadow] hover:bg-muted/55 focus-visible:border-primary/60 focus-visible:ring-primary/20 data-[state=open]:border-primary/50 data-[state=open]:bg-muted/55 data-[state=open]:shadow-md",
+          // The variant class wins over a bare `h-11`, so the height has to be
+          // written with the same variant or the trigger silently stays at 32px
+          // while every control beside it is 44.
+          "h-11 data-[size=default]:h-11 min-w-[11.5rem] rounded-full border-border-strong bg-background px-3.5 shadow-sm transition-[border-color,background-color,box-shadow] hover:bg-muted/55 focus-visible:border-primary/60 focus-visible:ring-primary/20 data-[state=open]:border-primary/50 data-[state=open]:bg-muted/55 data-[state=open]:shadow-md",
           className
         )}
       >

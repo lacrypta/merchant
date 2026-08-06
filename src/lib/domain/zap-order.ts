@@ -1,4 +1,5 @@
 import { decodeInvoice } from "@/lib/domain/bolt11"
+import { discountByLine, freeUnitsFor, type Benefit } from "@/lib/domain/coupon"
 import { KINDS } from "@/lib/domain/kinds"
 import { firstTag, tagValue } from "@/lib/nostr/tags"
 import { verifySignedEventCached } from "@/lib/nostr/verify"
@@ -32,7 +33,8 @@ export interface ZapOrderCoupon {
  * an incomplete event.
  */
 export interface ZapReceiptOrder {
-  receipt: SignedEvent
+  /** Null on a reclaimed order: nothing was paid, so nobody receipted it. */
+  receipt: SignedEvent | null
   zapRequest: SignedEvent | null
   lines: ZapOrderLine[]
   itemsCount: number | null
@@ -52,8 +54,12 @@ export interface ZapReceiptOrder {
 export type SatAllocationQuality = "exact" | "estimated" | "unavailable"
 
 export interface AllocatedZapOrderLine extends ZapOrderLine {
-  /** Aggregate sats for this line (quantity included). */
+  /** Aggregate sats for this line (quantity included), NET of the coupon. */
   sats: number | null
+  /** Units of this product the coupon handed over. 0 for everything else. */
+  freeQty: number
+  /** What the coupon took off this line, in the line's own currency. */
+  discount: number
 }
 
 function isSignedEvent(value: unknown): value is SignedEvent {
@@ -143,6 +149,30 @@ export function parseZapReceiptOrder(
     candidate && verifySignedEventCached(candidate) && tagValue(candidate, "p") === merchantPubkey
       ? candidate
       : null
+
+  return {
+    ...parseZapRequestOrder(zapRequest),
+    receipt,
+    receiptSats: receiptSats(receipt),
+  }
+}
+
+/**
+ * The same projection, from the request alone.
+ *
+ * Everything an order says about itself — the items, the totals, the coupon —
+ * is in the buyer's kind-9734; the receipt only adds what was actually charged.
+ * So a redemption filed by the coupon service, which has the request and will
+ * never have a receipt, reads through exactly the same shape.
+ *
+ * This does NOT verify the signature: the receipt path already did, and the
+ * server verified before storing a redemption. Do not call it on an event that
+ * has been through neither.
+ */
+export function parseZapRequestOrder(
+  zapRequest: SignedEvent | null,
+  receiptSats: number | null = null
+): ZapReceiptOrder {
   const lines = (zapRequest?.tags ?? []).flatMap((tag): ZapOrderLine[] => {
     if (tag[0] !== "item" || !tag[1]) return []
     const qty = parsePositiveInteger(tag[2])
@@ -167,7 +197,7 @@ export function parseZapReceiptOrder(
   const couponTag = zapRequest ? firstTag(zapRequest, "coupon") : undefined
 
   return {
-    receipt,
+    receipt: null,
     zapRequest,
     lines,
     itemsCount: zapRequest ? parsePositiveInteger(firstTag(zapRequest, "items_count")?.[1]) : null,
@@ -177,7 +207,7 @@ export function parseZapReceiptOrder(
         ? { id: couponTag[1], type: couponTag[2], name: couponTag[3] ?? "" }
         : null,
     discounts: amountTags("discount"),
-    receiptSats: receiptSats(receipt),
+    receiptSats,
   }
 }
 
@@ -188,43 +218,81 @@ export function parseZapReceiptOrder(
  * every weight. Mixed-currency allocation needs a common unit, so it uses the
  * supplied sat-price table and is explicitly labeled estimated: those are
  * current rates, not the historical checkout quote.
+ *
+ * WITH A COUPON, the weights are NET of what that coupon took off each line.
+ * The invoice charged gross minus the discount, and a coupon for a free beer
+ * took the price of one beer — weighting by gross would spread that beer across
+ * every line, which reads as "everything was a bit cheaper" and reports the
+ * wrong revenue for every product in the basket. The total is identical either
+ * way; only the attribution is at stake, and the attribution is the whole point
+ * of this function.
  */
 export function allocateOrderLineSats(
   order: ZapReceiptOrder,
-  rates: SatPriceTable | null
+  rates: SatPriceTable | null,
+  /** The coupon's frozen terms, when the merchant's records still have them. */
+  benefit: Benefit | null = null
 ): { lines: AllocatedZapOrderLine[]; quality: SatAllocationQuality } {
+  const priced = order.lines.every(
+    (line) => line.unitAmount !== undefined && line.currency && line.unitAmount >= 0
+  )
+  /**
+   * What the coupon took off each line, in that line's own currency, and how
+   * many units it handed over. Both need prices, so an order whose item tags
+   * were degraded to fit the URL budget simply has neither.
+   */
+  const priceable =
+    benefit && priced
+      ? order.lines.map((line) => ({
+          d: line.d,
+          qty: line.qty,
+          title: "",
+          unitAmount: line.unitAmount!,
+          currency: line.currency!,
+        }))
+      : null
+  const cut = priceable && benefit ? discountByLine(priceable, benefit) : null
+  const free = priceable && benefit ? freeUnitsFor(priceable, benefit) : []
+  const decorate = (line: ZapOrderLine, index: number) => ({
+    ...line,
+    freeQty: free.find((f) => f.d === line.d)?.qty ?? 0,
+    discount: cut?.[index] ?? 0,
+  })
+
   const unavailable = (): {
     lines: AllocatedZapOrderLine[]
     quality: SatAllocationQuality
   } => ({
-    lines: order.lines.map((line) => ({ ...line, sats: null })),
+    lines: order.lines.map((line, index) => ({ ...decorate(line, index), sats: null })),
     quality: "unavailable",
   })
 
   if (order.receiptSats === null || order.lines.length === 0) return unavailable()
 
+  const totalSats = Math.round(order.receiptSats)
+
   if (order.lines.length === 1) {
     return {
-      lines: [{ ...order.lines[0]!, sats: Math.round(order.receiptSats) }],
+      lines: [{ ...decorate(order.lines[0]!, 0), sats: totalSats }],
       quality: "exact",
     }
   }
 
-  if (
-    order.lines.some(
-      (line) =>
-        line.unitAmount === undefined ||
-        !line.currency ||
-        line.unitAmount < 0
-    )
-  ) {
-    return unavailable()
+  // Nothing was charged — a coupon covered the basket. Every line cost zero,
+  // which is an exact answer and not a missing one.
+  if (totalSats === 0) {
+    return {
+      lines: order.lines.map((line, index) => ({ ...decorate(line, index), sats: 0 })),
+      quality: "exact",
+    }
   }
+
+  if (!priced) return unavailable()
 
   const currencies = new Set(order.lines.map((line) => line.currency!))
   const sameCurrency = currencies.size === 1
-  const weights = order.lines.map((line) => {
-    const subtotal = line.unitAmount! * line.qty
+  const weights = order.lines.map((line, index) => {
+    const subtotal = Math.max(0, line.unitAmount! * line.qty - (cut?.[index] ?? 0))
     if (sameCurrency) return subtotal
     return rates ? toSats(subtotal, line.currency!, rates) : null
   })
@@ -239,7 +307,6 @@ export function allocateOrderLineSats(
 
   // Largest-remainder allocation keeps every row whole-sat and reconciles
   // exactly to the receipt total.
-  const totalSats = Math.round(order.receiptSats)
   const weightTotal = numericWeights.reduce((sum, weight) => sum + weight, 0)
   const raw = numericWeights.map((weight) => (weight / weightTotal) * totalSats)
   const allocated = raw.map(Math.floor)
@@ -253,7 +320,10 @@ export function allocateOrderLineSats(
   }
 
   return {
-    lines: order.lines.map((line, index) => ({ ...line, sats: allocated[index]! })),
+    lines: order.lines.map((line, index) => ({
+      ...decorate(line, index),
+      sats: allocated[index]!,
+    })),
     quality: sameCurrency ? "exact" : "estimated",
   }
 }

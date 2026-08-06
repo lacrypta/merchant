@@ -105,8 +105,8 @@ const STEPS: readonly Step[] = [
   {
     id: "limits",
     title: "Límites",
-    hint: "Cuántos y hasta cuándo",
-    fields: ["maxUses", "expiresAt"],
+    hint: "Cuánto, cuántos y hasta cuándo",
+    fields: ["capAmount", "maxUses", "expiresAt"],
   },
 ] as const
 
@@ -194,6 +194,13 @@ export function CouponWizard({
   const [buyProductD, setBuyProductD] = React.useState(initial.buyProductD)
   const [giftProductD, setGiftProductD] = React.useState(initial.giftProductD)
   const [freeItems, setFreeItems] = React.useState<FreeUnits[]>(initial.freeItems)
+  const [capOn, setCapOn] = React.useState(initial.capAmount !== null)
+  const [capAmount, setCapAmount] = React.useState(
+    initial.capAmount === null ? "" : String(initial.capAmount)
+  )
+  const [capCurrency, setCapCurrency] = React.useState<Currency>(
+    initial.capCurrency as Currency
+  )
   const [limitUses, setLimitUses] = React.useState(existing?.maxUses != null)
   const [maxUses, setMaxUses] = React.useState(
     existing?.maxUses != null ? String(existing.maxUses) : "50"
@@ -225,6 +232,8 @@ export function CouponWizard({
     buyProductD,
     giftProductD,
     freeItems,
+    capAmount: capOn ? num(capAmount) : null,
+    capCurrency,
     maxUses: limitUses ? num(maxUses) : null,
     expiresAt,
   }
@@ -530,6 +539,49 @@ export function CouponWizard({
           value="limits"
           className="space-y-5 pt-5 data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:slide-in-from-right-2"
         >
+          <div className="space-y-3 rounded-xl border border-border bg-surface-2 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="coupon-cap" className="text-base font-semibold">
+                Topear el descuento
+              </Label>
+              <Switch id="coupon-cap" checked={capOn} onCheckedChange={setCapOn} />
+            </div>
+            {capOn ? (
+              <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
+                <Field
+                  label="Descuento máximo"
+                  htmlFor="coupon-cap-amount"
+                  error={errors.capAmount}
+                >
+                  <Input
+                    id="coupon-cap-amount"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="any"
+                    className="numeric text-lg md:text-lg"
+                    value={capAmount}
+                    onChange={(e) => setCapAmount(e.target.value)}
+                    placeholder="5000"
+                    aria-invalid={!!errors.capAmount}
+                  />
+                </Field>
+                <Field label="Moneda">
+                  <SegmentedControl
+                    value={capCurrency}
+                    onValueChange={(v) => setCapCurrency(v as Currency)}
+                    options={CURRENCIES.map((c) => ({ value: c, label: c }))}
+                    aria-label="Moneda del tope"
+                  />
+                </Field>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Sin tope: el descuento vale lo que valga contra el carrito.
+              </p>
+            )}
+          </div>
+
           <div className="space-y-3 rounded-xl border border-border bg-surface-2 p-4">
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor="coupon-limit-uses" className="text-base font-semibold">

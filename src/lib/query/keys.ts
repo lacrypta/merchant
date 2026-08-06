@@ -21,6 +21,9 @@ export const qk = {
   /** The issued instances of ONE coupon, loaded when the merchant opens it. */
   couponMints: (couponId: string) => ["coupon-mints", couponId] as const,
 
+  /** Redeemed coupons and the orders they paid for — also from OUR Postgres. */
+  couponRedemptions: (pubkey: string) => ["coupon-redemptions", pubkey] as const,
+
   /** Zap receipts paid to one merchant, projected into their order book. */
   orders: (pubkey: string) => ["orders", pubkey] as const,
 

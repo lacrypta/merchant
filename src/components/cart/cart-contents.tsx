@@ -8,24 +8,20 @@ import { Odometer } from "@/components/ui/odometer"
 import { usePresenceList } from "@/hooks/use-presence-list"
 import { cn } from "@/lib/utils"
 import { Approx, roundFor } from "@/components/cart/money"
-import { RateFreshnessChip } from "@/components/cart/rate-freshness-chip"
-import { SegmentedControl } from "@/components/ui/segmented-control"
 import { subtotalsByCurrency, type CartLine } from "@/lib/domain/cart"
 import { formatPrice } from "@/lib/domain/price"
 import { fromSats } from "@/lib/domain/rates"
 
 /**
- * The body of the cart: currency, reconciliation notices, lines, totals.
+ * The body of the cart: reconciliation notices, lines, totals.
  *
  * Shared verbatim by the mobile drawer and the desktop sidebar. Two copies of
  * this markup would drift the moment either one is touched, and the one place
  * that must never disagree with itself is the thing showing the total.
  */
 export function CartContents({
-  compact,
   emptyMessage,
 }: {
-  compact?: boolean
   /** Shown once the last line has finished animating away. */
   emptyMessage?: React.ReactNode
 }) {
@@ -36,7 +32,6 @@ export function CartContents({
     quote,
     rates,
     displayCurrency,
-    setDisplayCurrency,
     add,
     setLineQty,
     remove,
@@ -46,12 +41,6 @@ export function CartContents({
   const total =
     quote && rates ? fromSats(quote.exactSats, displayCurrency, rates) : null
   const unquotable = quote?.unquotable ?? []
-
-  const currencies = React.useMemo(() => {
-    const seen = new Set<string>(["ARS", "USD", "SAT"])
-    for (const l of cart.lines) seen.add(l.currency)
-    return [...seen].filter((c) => c === "SAT" || rates?.[c])
-  }, [cart.lines, rates])
 
   const lineKey = React.useCallback((l: CartLine) => l.d, [])
   const presence = usePresenceList(cart.lines, lineKey)
@@ -73,16 +62,6 @@ export function CartContents({
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <SegmentedControl
-          aria-label="Moneda"
-          value={displayCurrency}
-          onValueChange={setDisplayCurrency}
-          options={currencies.map((c) => ({ value: c, label: c }))}
-        />
-        {compact ? null : <RateFreshnessChip />}
-      </div>
-
       {issues.length > 0 ? (
         <ul className="mb-4 space-y-2">
           {issues.map((issue, i) => (
@@ -206,12 +185,6 @@ export function CartContents({
           </div>
         ) : null}
       </dl>
-
-      {compact ? (
-        <div className="mt-3">
-          <RateFreshnessChip />
-        </div>
-      ) : null}
 
       {unquotable.length > 0 ? (
         <p

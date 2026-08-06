@@ -5,6 +5,7 @@ import {
   ok,
   preflight,
   requireDb,
+  parseClaimedOrder,
   requireManager,
   signVoucher,
   toCouponPayload,
@@ -94,16 +95,32 @@ export async function POST(request: Request) {
   if ("response" in manager) return manager.response
 
   let nonce: unknown
+  let zapRequest: unknown
+  let amountMsat: unknown
   try {
-    const body: unknown = await request.json()
-    nonce = (body as { nonce?: unknown } | null)?.nonce
+    const body = (await request.json()) as {
+      nonce?: unknown
+      zapRequest?: unknown
+      amountMsat?: unknown
+    } | null
+    nonce = body?.nonce
+    zapRequest = body?.zapRequest
+    amountMsat = body?.amountMsat
   } catch {
     return fail("Cuerpo inválido.", 400, METHODS)
   }
   if (!isValidNonce(nonce)) return fail("Falta el cupón.", 400, METHODS)
 
   try {
-    const outcome = await claimByNonce(db.db, nonce)
+    /**
+     * A malformed order does NOT stop the claim.
+     *
+     * The customer is standing at the counter with a coupon; refusing to redeem
+     * it because we could not file the paperwork is the one outcome nobody
+     * wants. What is lost is the merchant's record of what was bought, and only
+     * for a caller that sent us something we could not verify.
+     */
+    const outcome = await claimByNonce(db.db, nonce, parseClaimedOrder(zapRequest, amountMsat))
     if (!outcome.ok) {
       if (outcome.reason === "voided") return fail("El cupón fue anulado.", 410, METHODS)
       if (outcome.reason === "expired") return fail("El cupón está vencido.", 410, METHODS)

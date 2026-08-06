@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowLeft, CheckCircle2, Loader2, Zap } from "lucide-react"
+import { ArrowLeft, CheckCircle2, Loader2, TicketPercent, Zap } from "lucide-react"
 import Link from "next/link"
 import * as React from "react"
 
@@ -13,7 +13,12 @@ import { Odometer } from "@/components/ui/odometer"
 import { Skeleton } from "@/components/ui/skeleton"
 import { TickerChip } from "@/components/ui/ticker-chip"
 import { decodeInvoice, DEFAULT_EXPIRY_SECONDS } from "@/lib/domain/bolt11"
-import type { AppliedCoupon } from "@/lib/domain/coupon"
+import {
+  describeBenefit,
+  discountEntries,
+  freeUnitsFor,
+  type AppliedCoupon,
+} from "@/lib/domain/coupon"
 import { formatPrice } from "@/lib/domain/price"
 import {
   QUOTE_TTL_MS,
@@ -36,6 +41,7 @@ import {
 import { clearOrder, loadOrder, saveOrder } from "@/lib/checkout/order-store"
 import { usePaymentWatch } from "@/lib/checkout/use-payment-watch"
 import { nowSeconds } from "@/lib/nostr/created-at"
+import type { SignedEvent } from "@/lib/nostr/types"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
 
 interface PayParams {
@@ -142,11 +148,12 @@ export function CheckoutScreen({
       if (cancelled) return
 
       if (existing) {
-        // A paid order is never restored. It is dropped from storage the moment
-        // payment lands (see below), so reaching here means a copy survived —
-        // another tab, or a session that predates that rule — and showing it
-        // would greet the next customer with somebody else's receipt.
-        if (existing.status === "paid") {
+        // A paid — or reclaimed — order is never restored. It is dropped from
+        // storage the moment it finishes (see below), so reaching here means a
+        // copy survived — another tab, or a session that predates that rule —
+        // and showing it would greet the next customer with somebody else's
+        // receipt.
+        if (existing.status === "paid" || existing.status === "claimed") {
           clearOrder(merchant.pubkey)
           try {
             await resolveParams()
@@ -237,6 +244,8 @@ export function CheckoutScreen({
 
   const live = order?.invoices.at(-1) ?? null
   const paid = order?.status === "paid"
+  /** Total 0: taken with a coupon, never invoiced. */
+  const reclaimed = order?.status === "claimed"
   const confirmed = order?.status === "manually_confirmed"
 
   /**
@@ -257,12 +266,14 @@ export function CheckoutScreen({
    */
   const clearedRef = React.useRef(false)
   React.useEffect(() => {
-    if (paid && !clearedRef.current) {
+    // A reclaimed order is finished for the same reason a paid one is: the
+    // customer got the goods and nothing is pending.
+    if ((paid || reclaimed) && !clearedRef.current) {
       clearedRef.current = true
       clear()
       clearOrder(merchant.pubkey)
     }
-  }, [paid, clear, merchant.pubkey])
+  }, [paid, reclaimed, clear, merchant.pubkey])
 
   /**
    * @param opts.params  Use these instead of state — the expiry retry passes
@@ -279,66 +290,17 @@ export function CheckoutScreen({
 
     try {
       let working = existing ?? order
-
-      /**
-       * Redeem the coupon before asking for an invoice.
-       *
-       * This is the one ordering that cannot be wrong. Claiming AFTER the
-       * invoice would mean handing out a discounted invoice that a second till
-       * could also honour with the same nonce; claiming here means the worst
-       * case is a customer who abandons a paid-for redemption, which costs the
-       * merchant one coupon they can re-issue in two taps.
-       *
-       * Once claimed, `claimedAt` is recorded on the order so a re-quote at a
-       * fresh exchange rate — which happens routinely on a checkout screen left
-       * open — never tries to spend the nonce twice.
-       */
+      const restored = !!working
       const activeCoupon = working?.coupon ?? coupon
-      let claimed: AppliedCoupon | undefined = activeCoupon ?? undefined
-
-      if (activeCoupon && !activeCoupon.claimedAt) {
-        const outcome = await claimCoupon(activeCoupon.nonce)
-
-        if (outcome.kind === "unavailable") {
-          setPhase({
-            k: "error",
-            message: "No pudimos validar el cupón. Probá de nuevo en unos segundos.",
-          })
-          return
-        }
-
-        if (outcome.kind === "spent") {
-          // Somebody redeemed it between the shopper applying it and paying.
-          // Drop it and make them re-quote: silently charging the full price
-          // after showing a discount would be the worse betrayal.
-          removeCoupon()
-          if (working) {
-            clearOrder(merchant.pubkey)
-            setOrder(null)
-          }
-          setPhase({ k: "error", message: outcome.message })
-          return
-        }
-
-        claimed = { ...activeCoupon, claimedAt: outcome.claimedAt }
-
-        /**
-         * Write it to the cart NOW, before the invoice request.
-         *
-         * The nonce is already spent at this point, and everything that would
-         * otherwise carry that fact — the order row — is minted several awaits
-         * later. If the LNURL call throws in between, or the shopper closes the
-         * tab, the cart survives in localStorage with an unclaimed-looking
-         * coupon and the next attempt re-claims it: the server answers
-         * "claimed", we call it spent, and a coupon this very browser paid for
-         * comes off the order.
-         */
-        applyCoupon(claimed)
-      }
 
       // Mint the order (and therefore the order id) exactly once. Re-invoicing
       // resubmits the SAME signed zap request, which is why the id survives a
       // rate change — the 9734 carries no `amount` tag.
+      //
+      // Signed BEFORE the coupon is claimed, and deliberately: signing is
+      // local, so it costs nothing to do first, and it means the claim can
+      // carry the order with it. That is what gives the merchant a record of a
+      // reclaimed order — one that will never have an invoice or a receipt.
       if (!working) {
         const lines = toOrderLines(cart.lines)
         const relays = dedupeRelays([...DEFAULT_RELAYS]).filter(
@@ -356,8 +318,8 @@ export function CheckoutScreen({
           amountMsat: quote.msat,
           comment: null,
           createdAt: newOrderCreatedAt(),
-          coupon: claimed
-            ? { applied: claimed, discount: priced?.entries ?? [] }
+          coupon: activeCoupon
+            ? { applied: activeCoupon, discount: priced?.entries ?? [] }
             : undefined,
         })
         const zapRequest = signZapRequest(fitted.template)
@@ -387,15 +349,84 @@ export function CheckoutScreen({
           invoices: [],
           proofs: [],
           anomalies: [],
-          ...(claimed ? { coupon: claimed } : {}),
+          ...(activeCoupon ? { coupon: activeCoupon } : {}),
         }
-        commit(working)
-      } else if (claimed && !working.coupon?.claimedAt) {
-        // Re-invoicing an order whose coupon we just redeemed: record the
-        // redemption so a third quote does not try to spend the nonce again.
-        working = { ...working, coupon: claimed, updatedAt: Date.now() }
-        commit(working)
       }
+
+      /**
+       * Redeem the coupon before asking for an invoice.
+       *
+       * This is the one ordering that cannot be wrong. Claiming AFTER the
+       * invoice would mean handing out a discounted invoice that a second till
+       * could also honour with the same nonce; claiming here means the worst
+       * case is a customer who abandons a paid-for redemption, which costs the
+       * merchant one coupon they can re-issue in two taps.
+       *
+       * Once claimed, `claimedAt` is recorded on the order so a re-quote at a
+       * fresh exchange rate — which happens routinely on a checkout screen left
+       * open — never tries to spend the nonce twice.
+       */
+      if (activeCoupon && !activeCoupon.claimedAt) {
+        const outcome = await claimCoupon(activeCoupon.nonce, {
+          zapRequest: working.zapRequest,
+          amountMsat: quote.msat,
+        })
+
+        if (outcome.kind === "unavailable") {
+          setPhase({
+            k: "error",
+            message: "No pudimos validar el cupón. Probá de nuevo en unos segundos.",
+          })
+          return
+        }
+
+        if (outcome.kind === "spent") {
+          // Somebody redeemed it between the shopper applying it and paying.
+          // Drop it and make them re-quote: silently charging the full price
+          // after showing a discount would be the worse betrayal.
+          removeCoupon()
+          if (restored) {
+            clearOrder(merchant.pubkey)
+            setOrder(null)
+          }
+          setPhase({ k: "error", message: outcome.message })
+          return
+        }
+
+        const claimed: AppliedCoupon = { ...activeCoupon, claimedAt: outcome.claimedAt }
+        working = { ...working, coupon: claimed, updatedAt: Date.now() }
+
+        /**
+         * Write it to the cart NOW, before the invoice request.
+         *
+         * The nonce is already spent at this point. If the LNURL call throws in
+         * between, or the shopper closes the tab, the cart survives in
+         * localStorage with an unclaimed-looking coupon and the next attempt
+         * re-claims it: the server answers "claimed", we call it spent, and a
+         * coupon this very browser paid for comes off the order.
+         */
+        applyCoupon(claimed)
+      }
+
+      /**
+       * Nothing to charge: the coupon covered the whole basket.
+       *
+       * There is no invoice to generate — a zero-sat one is not payable — and
+       * therefore no payment, no receipt and nothing to watch. The claim we
+       * just made IS the order record, which is why this branch can only be
+       * reached with a coupon on the order.
+       */
+      if (quote.msat === 0) {
+        if (!working.coupon) {
+          setPhase({ k: "error", message: "Aplicá un cupón para reclamar el pedido." })
+          return
+        }
+        commit({ ...working, status: "claimed", updatedAt: Date.now() })
+        setPhase({ k: "ready" })
+        return
+      }
+
+      commit(working)
 
       const plan = planComment(active.commentAllowed, working.id)
       const zapJson = active.allowsNostr ? JSON.stringify(working.zapRequest) : null
@@ -511,13 +542,14 @@ export function CheckoutScreen({
 
   // ── Render ─────────────────────────────────────────────────────────────
 
-  if (paid || confirmed) {
+  if (paid || reclaimed || confirmed) {
     return (
       <PaidPanel
         order={order!}
         merchantName={merchant.displayName}
         npub={merchant.npub}
         confirmedOnly={confirmed}
+        reclaimed={reclaimed}
       />
     )
   }
@@ -548,6 +580,8 @@ export function CheckoutScreen({
   // and what the invoice charges for, so after it is minted the cart no longer
   // decides what this screen shows.
   const activeCouponForDisplay = order?.coupon ?? coupon
+  /** A basket a coupon took to zero: reclaimed, not paid. */
+  const free = !!quote && quote.msat === 0
   const expired = live !== null && now > live.displayExpiresAt
   const secondsLeft = live ? Math.max(0, Math.round((live.displayExpiresAt - now) / 1000)) : 0
 
@@ -650,18 +684,25 @@ export function CheckoutScreen({
 
             <Button
               fullWidth
-              disabled={phase.k === "invoicing" || phase.k === "loading" || !quote}
+              disabled={
+                phase.k === "invoicing" ||
+                phase.k === "loading" ||
+                !quote ||
+                // Nothing to charge and no coupon: there is no invoice to make
+                // and nothing to file the reclamo against.
+                (free && !activeCouponForDisplay)
+              }
               onClick={() => void createInvoice(order ?? undefined)}
             >
               {phase.k === "invoicing" ? (
                 <>
                   <Loader2 className="size-4 animate-spin" aria-hidden />
-                  Generando factura…
+                  {free ? "Reclamando…" : "Generando factura…"}
                 </>
               ) : (
                 <>
                   <Zap className="size-4" aria-hidden />
-                  {expired ? "Actualizar precio" : "Generar factura"}
+                  {free ? "Reclamar" : expired ? "Actualizar precio" : "Generar factura"}
                 </>
               )}
             </Button>
@@ -723,12 +764,24 @@ type ClaimOutcome =
  * never saw. Either way the coupon is gone and the shopper needs a fresh quote,
  * so both collapse into "spent".
  */
-async function claimCoupon(nonce: string): Promise<ClaimOutcome> {
+async function claimCoupon(
+  nonce: string,
+  /**
+   * The order being redeemed, so the service can file it. Ignored by an older
+   * deployment, and rejected by this one if it does not verify — either way the
+   * nonce is still spent, which is the part the checkout depends on.
+   */
+  order: { zapRequest: SignedEvent; amountMsat: number }
+): Promise<ClaimOutcome> {
   try {
     const res = await fetch("/api/coupons/claim", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce }),
+      body: JSON.stringify({
+        nonce,
+        zapRequest: order.zapRequest,
+        amountMsat: order.amountMsat,
+      }),
       cache: "no-store",
     })
     const data = (await res.json()) as {
@@ -862,13 +915,33 @@ function PaidPanel({
   merchantName,
   npub,
   confirmedOnly,
+  reclaimed = false,
 }: {
   order: Order
   merchantName: string
   npub: string
   confirmedOnly: boolean
+  /** Total 0, taken with a coupon. There is no payment to report. */
+  reclaimed?: boolean
 }) {
   const paidMsat = order.invoices.find((i) => i.state === "settled")?.amountMsat
+
+  /**
+   * Recomputed from the ORDER, not carried over from the cart.
+   *
+   * The cart is wiped the moment payment lands — that is deliberate, so the
+   * next customer at the same counter is not shown someone else's receipt — so
+   * by the time this renders there is nothing left to read `priced` from. The
+   * lines and the coupon's frozen terms are both on the order, and these are
+   * the same functions the checkout priced with, so the numbers match what was
+   * charged without needing a rate table.
+   */
+  const benefit = order.coupon?.benefit ?? null
+  const discount = benefit ? discountEntries(order.lines, benefit) : []
+  const freeUnits = benefit ? freeUnitsFor(order.lines, benefit) : []
+  const free = order.lines.map((l) => freeUnits.find((f) => f.d === l.d)?.qty ?? 0)
+  const titleOf = (d: string) => order.lines.find((l) => l.d === d)?.title
+
   return (
     <Shell npub={npub}>
       <div className="space-y-5 text-center">
@@ -886,12 +959,18 @@ function PaidPanel({
 
         <div>
           <h1 className="text-h1">
-            {confirmedOnly ? "Esperando confirmación" : "Pago recibido"}
+            {confirmedOnly
+              ? "Esperando confirmación"
+              : reclaimed
+                ? "Pedido reclamado"
+                : "Pago recibido"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {confirmedOnly
               ? "Mostrale el comprobante de tu billetera al comercio."
-              : `Le pagaste a ${merchantName}.`}
+              : reclaimed
+                ? `Mostrale esta pantalla a ${merchantName} para retirarlo.`
+                : `Le pagaste a ${merchantName}.`}
           </p>
         </div>
 
@@ -901,18 +980,48 @@ function PaidPanel({
           </p>
         ) : null}
 
-        <ul className="mx-auto max-w-sm space-y-1 text-left text-sm">
-          {order.lines.map((l) => (
-            <li key={l.d} className="flex justify-between gap-3">
-              <span className="min-w-0 truncate">
-                <span className="numeric text-muted-foreground">{l.qty}×</span> {l.title}
-              </span>
-              <span className="numeric shrink-0 text-muted-foreground">
-                {formatPrice(l.unitAmount * l.qty, l.currency)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <div className="mx-auto max-w-sm space-y-1 text-left text-sm">
+          <ul className="space-y-1">
+            {order.lines.map((l, i) => (
+              <li key={l.d} className="flex justify-between gap-3">
+                <span className="min-w-0 truncate">
+                  <span className="numeric text-muted-foreground">{l.qty}×</span> {l.title}
+                  {free[i]! > 0 ? (
+                    <span className="text-success"> · {free[i]} gratis</span>
+                  ) : null}
+                </span>
+                <span className="numeric shrink-0 text-muted-foreground">
+                  {formatPrice(l.unitAmount * l.qty, l.currency)}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          {/* The receipt has to say what was taken off and why, or the amounts
+              above do not add up to the amount that was charged — and the
+              customer is holding this screen up to the cashier. */}
+          {order.coupon ? (
+            <div className="mt-3 space-y-0.5 border-t border-border pt-3">
+              <div className="flex justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <TicketPercent className="size-4 shrink-0 text-primary" aria-hidden />
+                  <span className="truncate">Cupón {order.coupon.name}</span>
+                </span>
+                {discount.length > 0 ? (
+                  <span className="numeric shrink-0 text-success">
+                    −{discount.map((d) => formatPrice(d.amount, d.currency)).join(" − ")}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {describeBenefit(order.coupon.benefit, titleOf)}
+              </p>
+              <p className="numeric text-xs text-muted-foreground">
+                Código {order.coupon.nonce}
+              </p>
+            </div>
+          ) : null}
+        </div>
 
         <div className="space-y-1 text-xs text-muted-foreground">
           <p className="numeric truncate-middle">Pedido {order.id}</p>

@@ -1,5 +1,7 @@
 "use client"
 
+import type * as React from "react"
+
 import { useCart } from "@/components/cart/cart-provider"
 import { CartPanel } from "@/components/cart/cart-panel"
 import { MobileCartBar } from "@/components/cart/mobile-cart-bar"
@@ -12,13 +14,18 @@ import { MobileCartBar } from "@/components/cart/mobile-cart-bar"
  * can be rendered by a Server Component without dragging the whole cart UI
  * into that module's client boundary.
  */
-export function StorefrontChrome() {
+export function StorefrontChrome({
+  /** Server-rendered coupon input, for the drawer's copy of the cart. */
+  couponSlot,
+}: {
+  couponSlot?: React.ReactNode
+}) {
   const { count, hydrated } = useCart()
   const showBar = hydrated && count > 0
 
   return (
     <>
-      <CartPanel />
+      <CartPanel couponSlot={couponSlot} />
       <MobileCartBar />
       {/*
         `.safe-b` pads the BAR's own bottom for the home indicator; it does

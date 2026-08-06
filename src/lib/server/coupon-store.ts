@@ -408,6 +408,12 @@ export type ClaimOutcome =
   | { ok: true; fresh: boolean; mint: CouponMintRow; definition: CouponDefinitionRow }
   | { ok: false; reason: "not-found" | "expired" | "voided" }
 
+/** What the checkout was buying with this coupon. See couponMints.orderEvent. */
+export interface ClaimedOrder {
+  event: SignedEvent
+  amountMsat: number
+}
+
 /**
  * Redeem a nonce, once.
  *
@@ -418,11 +424,29 @@ export type ClaimOutcome =
  *
  * Note that an ARCHIVED definition still claims. Archiving stops new mints; a
  * coupon already in somebody's phone was a promise the merchant made.
+ *
+ * The order rides in the SAME update, so a row can never be claimed without the
+ * order that claimed it — and a second caller, who by definition lost the race,
+ * cannot overwrite the winner's order with their own.
  */
-export async function claimByNonce(db: Db, nonce: string): Promise<ClaimOutcome> {
+export async function claimByNonce(
+  db: Db,
+  nonce: string,
+  order?: ClaimedOrder
+): Promise<ClaimOutcome> {
   const [claimed] = await db
     .update(couponMints)
-    .set({ status: "claimed", claimedAt: new Date() })
+    .set({
+      status: "claimed",
+      claimedAt: new Date(),
+      ...(order
+        ? {
+            orderEvent: order.event,
+            orderId: order.event.id,
+            amountMsat: order.amountMsat,
+          }
+        : {}),
+    })
     .where(
       and(
         eq(couponMints.nonce, nonce),
@@ -554,6 +578,36 @@ export async function listMints(
     )
     .orderBy(desc(couponMints.mintedAt))
     .then((rows) => rows.map((r) => r.mint))
+}
+
+export interface ClaimRow {
+  mint: CouponMintRow
+  definition: CouponDefinitionRow
+}
+
+/**
+ * Every coupon this merchant has had redeemed, newest first.
+ *
+ * The definition comes along because the row is read as "un cupón canjeado" —
+ * its name and type — and fetching those one by one would be a query per row.
+ */
+export async function listClaims(
+  db: Db,
+  ownerPubkey: string,
+  limit = 500
+): Promise<ClaimRow[]> {
+  return db
+    .select({ mint: couponMints, definition: couponDefinitions })
+    .from(couponMints)
+    .innerJoin(couponDefinitions, eq(couponDefinitions.id, couponMints.definitionId))
+    .where(
+      and(
+        eq(couponDefinitions.ownerPubkey, ownerPubkey),
+        eq(couponMints.status, "claimed")
+      )
+    )
+    .orderBy(desc(couponMints.claimedAt))
+    .limit(limit)
 }
 
 export type VoidOutcome =

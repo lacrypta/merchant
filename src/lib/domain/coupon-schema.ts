@@ -53,6 +53,10 @@ export const couponFormSchema = z
     /** freeItems: what the coupon hands over. Empty is invalid, never "todos". */
     freeItems: z.array(z.object({ d: z.string(), qty: z.number() })),
 
+    /** null ⇒ sin tope. Applies to every type — see DiscountCap. */
+    capAmount: z.number().nullable(),
+    capCurrency: z.enum(CURRENCIES as unknown as [string, ...string[]]),
+
     /** null ⇒ sin límite. */
     maxUses: z.number().nullable(),
     /** "" ⇒ sin vencimiento. An `<input type="date">` value, local time. */
@@ -112,6 +116,13 @@ export const couponFormSchema = z
         break
     }
 
+    if (v.capAmount !== null) {
+      if (v.capAmount <= 0) fail("capAmount", "Tiene que ser mayor a 0")
+      else if (v.capCurrency === "SAT" && !Number.isInteger(v.capAmount)) {
+        fail("capAmount", "En sats el tope tiene que ser entero")
+      }
+    }
+
     if (v.type !== "buyXgetY" && v.productDs.length > MAX_COUPON_PRODUCTS) {
       fail("productDs", `No más de ${MAX_COUPON_PRODUCTS} productos`)
     }
@@ -136,17 +147,25 @@ export type CouponFormOutput = z.output<typeof couponFormSchema>
 const scope = (productDs: string[]) =>
   productDs.length > 0 ? { productDs } : {}
 
+/** Same idea for the ceiling: no amount means no key, not `cap: null`. */
+const capOf = (v: CouponFormOutput) =>
+  v.capAmount === null
+    ? {}
+    : { cap: { amount: v.capAmount, currency: v.capCurrency as "ARS" | "USD" | "SAT" } }
+
 /** Collapse the form's flat fields into the benefit the API expects. */
 export function benefitFromForm(v: CouponFormOutput): Benefit {
+  const cap = capOf(v)
   switch (v.type) {
     case "percent":
-      return { type: "percent", percent: v.percent!, ...scope(v.productDs) }
+      return { type: "percent", percent: v.percent!, ...scope(v.productDs), ...cap }
     case "fixed":
       return {
         type: "fixed",
         amount: v.amount!,
         currency: v.currency as "ARS" | "USD" | "SAT",
         ...scope(v.productDs),
+        ...cap,
       }
     case "multibuy":
       return {
@@ -154,15 +173,17 @@ export function benefitFromForm(v: CouponFormOutput): Benefit {
         buyQty: v.buyQty!,
         payQty: v.payQty!,
         ...scope(v.productDs),
+        ...cap,
       }
     case "buyXgetY":
       return {
         type: "buyXgetY",
         buyProductD: v.buyProductD,
         giftProductD: v.giftProductD,
+        ...cap,
       }
     case "freeItems":
-      return { type: "freeItems", items: v.freeItems }
+      return { type: "freeItems", items: v.freeItems, ...cap }
   }
 }
 
@@ -179,8 +200,12 @@ export function formValuesFromBenefit(b: Benefit): Pick<
   | "buyProductD"
   | "giftProductD"
   | "freeItems"
+  | "capAmount"
+  | "capCurrency"
 > {
   const base = {
+    capAmount: b.cap?.amount ?? null,
+    capCurrency: b.cap?.currency ?? "ARS",
     percent: null,
     amount: null,
     currency: "ARS",

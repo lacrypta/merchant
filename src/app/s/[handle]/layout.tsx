@@ -1,8 +1,14 @@
+import { Suspense } from "react"
+
 import { CartButton } from "@/components/cart/cart-button"
 import { CartProvider } from "@/components/cart/cart-provider"
 import { StorefrontChrome } from "@/components/cart/storefront-chrome"
 import { SiteFooter } from "@/components/shell/site-footer"
 import { SiteNavbar } from "@/components/shell/site-navbar"
+import {
+  CouponSlot,
+  CouponSlotSkeleton,
+} from "@/components/storefront/coupon-availability"
 import {
   getCatalog,
   getMerchantIdentity,
@@ -67,7 +73,16 @@ export default async function StorefrontLayout({
       <SiteFooter />
       {/* After the footer: its spacer has to come last, or it would sit
           between the page and the footer instead of below both. */}
-      <StorefrontChrome />
+      <StorefrontChrome
+        couponSlot={
+          <Suspense fallback={<CouponSlotSkeleton />}>
+            <CouponSlot
+              pubkey={data.resolved.pubkey}
+              relayHints={data.resolved.relayHints}
+            />
+          </Suspense>
+        }
+      />
     </CartProvider>
   )
 }
