@@ -38,12 +38,24 @@ export function ProductScopePicker({
   products,
   /** What "no products picked" means here, in words. */
   allLabel = "Todos los productos",
+  /**
+   * False for a picker whose empty state is not an answer.
+   *
+   * "Producto gratis" is the one benefit that cannot mean the whole catalog —
+   * so there is no "todos" row to pick, and the trigger asks for products
+   * instead of claiming to have them all.
+   */
+  emptyMeansAll = true,
+  /** False when the caller lists what was picked itself — with quantities. */
+  showSelected = true,
   disabled,
 }: {
   value: string[]
   onChange: (next: string[]) => void
   products: ScopeProduct[]
   allLabel?: string
+  emptyMeansAll?: boolean
+  showSelected?: boolean
   disabled?: boolean
 }) {
   const [open, setOpen] = React.useState(false)
@@ -70,8 +82,12 @@ export function ProductScopePicker({
             <span className="flex min-w-0 items-center gap-2">
               {value.length === 0 ? (
                 <>
-                  <Store className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                  {allLabel}
+                  {emptyMeansAll ? (
+                    <Store className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  ) : null}
+                  <span className={cn(!emptyMeansAll && "text-muted-foreground")}>
+                    {allLabel}
+                  </span>
                 </>
               ) : (
                 <span className="truncate">
@@ -90,23 +106,25 @@ export function ProductScopePicker({
             <CommandInput placeholder="Buscar producto…" />
             <CommandList>
               <CommandEmpty>No encontramos ese producto.</CommandEmpty>
-              <CommandGroup>
-                <CommandItem
-                  value="__todos__"
-                  onSelect={() => {
-                    onChange([])
-                    setOpen(false)
-                  }}
-                >
-                  <Check
-                    className={cn("size-4", value.length > 0 && "opacity-0")}
-                    aria-hidden
-                  />
-                  <span className="font-medium">{allLabel}</span>
-                </CommandItem>
-              </CommandGroup>
+              {emptyMeansAll ? (
+                <CommandGroup>
+                  <CommandItem
+                    value="__todos__"
+                    onSelect={() => {
+                      onChange([])
+                      setOpen(false)
+                    }}
+                  >
+                    <Check
+                      className={cn("size-4", value.length > 0 && "opacity-0")}
+                      aria-hidden
+                    />
+                    <span className="font-medium">{allLabel}</span>
+                  </CommandItem>
+                </CommandGroup>
+              ) : null}
 
-              <CommandGroup heading="Solo estos">
+              <CommandGroup heading={emptyMeansAll ? "Solo estos" : undefined}>
                 {products.map((p) => (
                   <CommandItem
                     key={p.d}
@@ -129,12 +147,13 @@ export function ProductScopePicker({
 
       {products.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          Todavía no tenés productos en el catálogo: el descuento va a aplicar a
-          toda la compra.
+          {emptyMeansAll
+            ? "Todavía no tenés productos en el catálogo: el descuento va a aplicar a toda la compra."
+            : "Todavía no tenés productos en el catálogo: cargá alguno para poder regalarlo."}
         </p>
       ) : null}
 
-      {selected.length > 0 ? (
+      {showSelected && selected.length > 0 ? (
         <ul className="flex flex-wrap gap-1.5">
           {selected.map((p) => (
             <li key={p.d}>

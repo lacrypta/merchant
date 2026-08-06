@@ -12,7 +12,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core"
 
-import type { Benefit } from "@/lib/domain/coupon"
+import type { Benefit, FreeUnits } from "@/lib/domain/coupon"
 import type { SignedEvent } from "@/lib/nostr/types"
 
 /**
@@ -33,6 +33,7 @@ export const couponType = pgEnum("coupon_type", [
   "fixed",
   "multibuy",
   "buy_x_get_y",
+  "free_items",
 ])
 
 /**
@@ -79,6 +80,8 @@ export const couponDefinitions = pgTable(
     /** buy_x_get_y: one `giftProductD` free when `buyProductD` is in the cart. */
     buyProductD: uuid("buy_product_d"),
     giftProductD: uuid("gift_product_d"),
+    /** free_items: `[{ d, qty }]` handed over. Never null for that type. */
+    freeItems: jsonb("free_items").$type<FreeUnits[]>(),
 
     /** null ⇒ unlimited mints. */
     maxUses: integer("max_uses"),

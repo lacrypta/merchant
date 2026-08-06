@@ -9,7 +9,11 @@ import {
   Gift,
   Layers,
   Loader2,
+  Minus,
+  PackageOpen,
+  Plus,
   TicketPercent,
+  X,
 } from "lucide-react"
 import * as React from "react"
 
@@ -32,7 +36,12 @@ import { SegmentedControl } from "@/components/ui/segmented-control"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { describeBenefit, type CouponType } from "@/lib/domain/coupon"
+import {
+  describeBenefit,
+  MAX_FREE_QTY,
+  type CouponType,
+  type FreeUnits,
+} from "@/lib/domain/coupon"
 import {
   benefitFromForm,
   couponFormSchema,
@@ -84,6 +93,7 @@ const STEPS: readonly Step[] = [
       "productDs",
       "buyProductD",
       "giftProductD",
+      "freeItems",
     ],
   },
   {
@@ -110,6 +120,12 @@ const TYPES: {
   { value: "fixed", label: "Monto fijo", example: "ARS 500 menos", icon: Coins },
   { value: "multibuy", label: "NxM", example: "2x1, 3x2", icon: Layers },
   { value: "buyXgetY", label: "Regalo", example: "Comprá uno, llevate otro", icon: Gift },
+  {
+    value: "freeItems",
+    label: "Producto gratis",
+    example: "2 cafés, sin comprar nada",
+    icon: PackageOpen,
+  },
 ]
 
 /** Unix seconds ⇄ the `yyyy-mm-dd` an `<input type="date">` speaks. */
@@ -177,6 +193,7 @@ export function CouponWizard({
   const [productDs, setProductDs] = React.useState<string[]>(initial.productDs)
   const [buyProductD, setBuyProductD] = React.useState(initial.buyProductD)
   const [giftProductD, setGiftProductD] = React.useState(initial.giftProductD)
+  const [freeItems, setFreeItems] = React.useState<FreeUnits[]>(initial.freeItems)
   const [limitUses, setLimitUses] = React.useState(existing?.maxUses != null)
   const [maxUses, setMaxUses] = React.useState(
     existing?.maxUses != null ? String(existing.maxUses) : "50"
@@ -207,6 +224,7 @@ export function CouponWizard({
     productDs,
     buyProductD,
     giftProductD,
+    freeItems,
     maxUses: limitUses ? num(maxUses) : null,
     expiresAt,
   }
@@ -310,7 +328,7 @@ export function CouponWizard({
         >
           <fieldset className="space-y-3">
             <legend className="text-base font-semibold">¿Qué tipo de descuento?</legend>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
               {TYPES.map((t) => (
                 <TypeCard
                   key={t.value}
@@ -451,6 +469,15 @@ export function CouponWizard({
                 />
               </Field>
             </div>
+          ) : null}
+
+          {type === "freeItems" ? (
+            <FreeItemsField
+              value={freeItems}
+              onChange={setFreeItems}
+              products={productOptions}
+              error={errors.freeItems}
+            />
           ) : null}
         </TabsContent>
 
@@ -789,6 +816,109 @@ function Field({
         <p className="text-sm text-muted-foreground">{hint}</p>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * "Qué se lleva gratis" — products and how many of each.
+ *
+ * The picker chooses, and the rows below carry the quantities, so the same
+ * searchable control the other types use does the searching here too. It is
+ * asked NOT to render its own chips: a chip and a quantity row for the same
+ * product would be the same product twice.
+ *
+ * Empty is an error rather than a default. Everywhere else in this form an
+ * empty picker means "toda la compra"; here that would read as "the catalog,
+ * free", which is not something a merchant means by accident.
+ */
+function FreeItemsField({
+  value,
+  onChange,
+  products,
+  error,
+}: {
+  value: FreeUnits[]
+  onChange: (next: FreeUnits[]) => void
+  products: { d: string; title: string }[]
+  error?: string
+}) {
+  const titleOf = (d: string) =>
+    products.find((p) => p.d === d)?.title ?? "Producto borrado"
+
+  /** The picker speaks in `d`s; quantities of the ones already chosen survive. */
+  const setSelection = (ds: string[]) =>
+    onChange(ds.map((d) => value.find((i) => i.d === d) ?? { d, qty: 1 }))
+
+  const setQty = (d: string, qty: number) =>
+    onChange(
+      value.map((i) =>
+        i.d === d ? { ...i, qty: Math.min(Math.max(1, qty), MAX_FREE_QTY) } : i
+      )
+    )
+
+  return (
+    <Field
+      label="Qué se lleva gratis"
+      error={error}
+      required
+      hint="Se canjea por estos productos. No hace falta comprar nada más."
+    >
+      <div className="space-y-3">
+        <ProductScopePicker
+          value={value.map((i) => i.d)}
+          onChange={setSelection}
+          products={products}
+          allLabel="Elegí los productos"
+          emptyMeansAll={false}
+          showSelected={false}
+        />
+
+        {value.length > 0 ? (
+          <ul className="divide-y divide-border rounded-xl border border-border">
+            {value.map((item) => (
+              <li key={item.d} className="flex items-center gap-3 p-2 pl-4">
+                <span className="min-w-0 flex-1 truncate text-base">
+                  {titleOf(item.d)}
+                </span>
+
+                <div className="flex items-center gap-1 rounded-full bg-surface-2 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setQty(item.d, item.qty - 1)}
+                    disabled={item.qty <= 1}
+                    aria-label={`Menos ${titleOf(item.d)}`}
+                    className="grid size-8 place-items-center rounded-full text-muted-foreground disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  >
+                    <Minus className="size-4" aria-hidden />
+                  </button>
+                  <span className="numeric min-w-6 text-center text-base font-semibold">
+                    {item.qty}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setQty(item.d, item.qty + 1)}
+                    disabled={item.qty >= MAX_FREE_QTY}
+                    aria-label={`Más ${titleOf(item.d)}`}
+                    className="grid size-8 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  >
+                    <Plus className="size-4" aria-hidden />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onChange(value.filter((i) => i.d !== item.d))}
+                  aria-label={`Quitar ${titleOf(item.d)}`}
+                  className="grid size-8 place-items-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                >
+                  <X className="size-4" aria-hidden />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </Field>
   )
 }
 

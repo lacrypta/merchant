@@ -63,7 +63,7 @@ Decisiones que no son obvias y conviene no revertir sin leer el porqué:
 
 ## Cupones
 
-Cuatro tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), y **comprá A, llevate B gratis**. Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra.
+Cinco tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), **comprá A, llevate B gratis**, y **producto gratis** (los productos y cantidades que elijas, sin comprar nada a cambio). Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra.
 
 El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
 
