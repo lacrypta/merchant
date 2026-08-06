@@ -5,8 +5,10 @@ import {
   MAX_COUPON_NAME,
   MAX_COUPON_PRODUCTS,
   MAX_COUPON_USES,
+  MAX_FREE_QTY,
   MAX_MULTIBUY_QTY,
   type Benefit,
+  type FreeUnits,
 } from "@/lib/domain/coupon"
 import { CURRENCIES } from "@/lib/domain/price"
 
@@ -37,7 +39,7 @@ export const couponFormSchema = z
       .startsWith("https://", "Tiene que empezar con https://")
       .optional()
       .or(z.literal("")),
-    type: z.enum(["percent", "fixed", "multibuy", "buyXgetY"]),
+    type: z.enum(["percent", "fixed", "multibuy", "buyXgetY", "freeItems"]),
 
     percent: z.number().nullable(),
     amount: z.number().nullable(),
@@ -48,6 +50,8 @@ export const couponFormSchema = z
     productDs: z.array(z.string()),
     buyProductD: z.string(),
     giftProductD: z.string(),
+    /** freeItems: what the coupon hands over. Empty is invalid, never "todos". */
+    freeItems: z.array(z.object({ d: z.string(), qty: z.number() })),
 
     /** null ⇒ sin límite. */
     maxUses: z.number().nullable(),
@@ -91,6 +95,20 @@ export const couponFormSchema = z
       case "buyXgetY":
         if (!v.buyProductD) fail("buyProductD", "Elegí el producto a comprar")
         if (!v.giftProductD) fail("giftProductD", "Elegí el producto de regalo")
+        break
+
+      case "freeItems":
+        if (v.freeItems.length === 0) {
+          fail("freeItems", "Elegí al menos un producto")
+        } else if (v.freeItems.length > MAX_COUPON_PRODUCTS) {
+          fail("freeItems", `No más de ${MAX_COUPON_PRODUCTS} productos`)
+        } else if (
+          v.freeItems.some(
+            (i) => !Number.isInteger(i.qty) || i.qty < 1 || i.qty > MAX_FREE_QTY
+          )
+        ) {
+          fail("freeItems", `Las cantidades van de 1 a ${MAX_FREE_QTY}`)
+        }
         break
     }
 
@@ -143,6 +161,8 @@ export function benefitFromForm(v: CouponFormOutput): Benefit {
         buyProductD: v.buyProductD,
         giftProductD: v.giftProductD,
       }
+    case "freeItems":
+      return { type: "freeItems", items: v.freeItems }
   }
 }
 
@@ -158,6 +178,7 @@ export function formValuesFromBenefit(b: Benefit): Pick<
   | "productDs"
   | "buyProductD"
   | "giftProductD"
+  | "freeItems"
 > {
   const base = {
     percent: null,
@@ -168,6 +189,7 @@ export function formValuesFromBenefit(b: Benefit): Pick<
     productDs: [] as string[],
     buyProductD: "",
     giftProductD: "",
+    freeItems: [] as FreeUnits[],
   }
   switch (b.type) {
     case "percent":
@@ -200,5 +222,7 @@ export function formValuesFromBenefit(b: Benefit): Pick<
         buyProductD: b.buyProductD,
         giftProductD: b.giftProductD,
       }
+    case "freeItems":
+      return { ...base, type: "freeItems", freeItems: b.items }
   }
 }

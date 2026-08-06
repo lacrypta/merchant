@@ -18,7 +18,7 @@ Todo lo que necesita esa garantía está en Postgres. Todo lo que necesita ser d
 
 ## 2. Tipos de descuento
 
-Cuatro, como unión discriminada (`Benefit` en [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts)):
+Cinco, como unión discriminada (`Benefit` en [`src/lib/domain/coupon.ts`](../src/lib/domain/coupon.ts)):
 
 | Tipo | Forma | Ejemplo |
 |---|---|---|
@@ -26,8 +26,23 @@ Cuatro, como unión discriminada (`Benefit` en [`src/lib/domain/coupon.ts`](../s
 | `fixed` | `{ type, amount, currency, productDs? }` | ARS 500 menos |
 | `multibuy` | `{ type, buyQty, payQty, productDs? }` | 2x1, 3x2 |
 | `buyXgetY` | `{ type, buyProductD, giftProductD }` | Comprá A, llevate B gratis |
+| `freeItems` | `{ type, items: [{ d, qty }] }` | 2 cafés gratis |
 
 `currency` es `ARS`, `USD` o `SAT`. En sats el monto tiene que ser entero: no se puede cobrar medio satoshi, y redondearlo en silencio haría que el cupón valga algo distinto de lo que dice.
+
+### Cuánto descuenta cada uno
+
+Contra un carrito de **2 empanadas a ARS 100** y **1 café a ARS 250** (bruto: ARS 450):
+
+| Cupón | Descuenta | Por qué |
+|---|---|---|
+| `percent` 10% | ARS 45 | 10% del subtotal de cada moneda |
+| `fixed` ARS 500 | ARS 449 | Se topea: nunca llega a cero, queda 1 sat |
+| `fixed` ARS 500 en café | ARS 250 | Topeado a lo que vale el café en el carrito |
+| `multibuy` 2x1 en empanada | ARS 100 | Un grupo completo de 2 ⇒ 1 gratis |
+| `buyXgetY` empanada → café | ARS 250 | Un regalo, siempre uno |
+| `freeItems` 1 empanada + 1 café | ARS 350 | Las unidades regaladas, a su precio de línea |
+| `freeItems` 3 empanadas | ARS 200 | Sólo hay 2 en el carrito: se regalan 2 |
 
 ### Alcance por producto
 
@@ -42,6 +57,19 @@ Con lista:
 - **`multibuy`** se cuenta por línea: con varios productos, cada uno suma por su cuenta.
 
 `buyXgetY` no lleva `productDs` porque ya nombra sus dos productos.
+
+### Producto gratis (`freeItems`)
+
+El único beneficio **sin condición de compra**: el cupón *es* el producto. Se elige una lista de productos con su cantidad — `[{ d, qty }]` — y esas unidades salen del total.
+
+Es la excepción a la regla de arriba, y a propósito: **acá la lista vacía no significa "todos"**, significa que el cupón es inválido. En los otros tipos "todos" es un descuento sobre la tienda; en este sería regalar el catálogo, que no es algo que alguien quiera decir sin querer. `parseBenefit` rechaza la lista vacía, y rechaza un producto repetido en vez de sumarlo: dos entradas del mismo café podrían ser 2 o 5, y adivinar cuál es peor que pedir que lo escriban una sola vez. Las cantidades van de 1 a `MAX_FREE_QTY` (100), hasta `MAX_COUPON_PRODUCTS` (50) productos.
+
+Dos reglas que caen de que igual hay que tener el producto en el carrito:
+
+- **Se topea contra el carrito.** Un cupón por 3 cafés contra un carrito con 1 regala 1. Nunca descuenta unidades que no están.
+- **Se aplica producto por producto.** Si el cupón da 1 empanada y 2 cafés, y en el carrito hay sólo empanada, la empanada sale gratis igual. Por eso `unmet.anyOf` es `true`: alcanza con cualquiera de los productos para que el cupón haga algo, y la tienda dice "agregá alguno de estos" en vez de exigir la lista completa.
+
+La diferencia con `buyXgetY` es la condición: aquel exige que el producto pagado esté en el carrito y regala **uno**; este no exige nada y regala **las cantidades que dice**.
 
 ### Reglas de la aritmética
 
@@ -314,10 +342,12 @@ Una vez **pagada** la orden, se borra del `localStorage`. El recibo sigue en pan
 
 Cuatro tablas ([`src/lib/server/db/schema.ts`](../src/lib/server/db/schema.ts)):
 
-- **`coupon_definitions`** — el cupón: dueño, nombre, descripción, imagen, tipo y sus columnas, `product_ds`, `max_uses`, `minted_count`, `expires_at`, `archived_at`.
+- **`coupon_definitions`** — el cupón: dueño, nombre, descripción, imagen, tipo y sus columnas, `product_ds`, `free_items`, `max_uses`, `minted_count`, `expires_at`, `archived_at`.
 - **`coupon_mints`** — cada emisión: `nonce` único, **`benefit` congelado en jsonb**, quién emitió, estado (`minted` | `claimed` | `voided`) y sus timestamps.
 - **`coupon_minters`** — qué npubs pueden emitir los cupones de cada dueño.
 - **`coupon_discovery`** — el anuncio firmado, una fila por comerciante.
+
+El beneficio vive en **columnas tipadas y anulables**, no en un jsonb único: así la tabla se lee, se indexa y se corrige con SQL a mano cuando algo se rompe a las 3 de la mañana. `parseBenefit` es lo que garantiza que para cada `type` esté poblado el subconjunto correcto. Las dos excepciones son listas y por eso son jsonb: `product_ds` (el alcance) y `free_items` (los `{ d, qty }` que se regalan). Son columnas distintas a propósito — una **acota** un descuento y la otra **es** el descuento, y compartirlas obligaría a mirar `type` antes de saber cuál de las dos cosas estás leyendo.
 
 **Por qué el beneficio se congela en la emisión:** editar un cupón cambia la definición, pero el voucher que el manager ya firmó dice otra cosa. El canje sirve el snapshot, así que un cupón en el teléfono de alguien vale lo que decía cuando se lo dieron.
 
@@ -343,7 +373,9 @@ Tres variables firman cosas y cada una falla distinto, a propósito:
 
 ```bash
 npm run db:generate   # después de tocar el schema
-npm run db:migrate    # en cada deploy
+npm run db:migrate    # a mano; el build ya lo hace solo
 ```
 
-Las migraciones son sólo por CLI: un migrador en runtime correría en carrera con varias instancias, y el output standalone de Next no incluye la carpeta `drizzle/`.
+**Las migraciones corren en el build**, no en runtime: `npm run build` ejecuta `drizzle-kit migrate` antes de compilar si hay `DATABASE_URL` (o `DATABASE_POOL_URL`), y falla el build si no aplican. Un migrador en runtime correría en carrera con varias instancias; dejarlo sólo en manos de quien despliega ya se probó y termina en una tabla que no existe.
+
+Si el proveedor da dos URLs —una directa y un pooler— la app y las migraciones usan **el pooler**. Lo de libro es migrar por la conexión directa, pero esto corre adentro del deploy: si el build no la alcanza, no hay migración.

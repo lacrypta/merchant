@@ -16,7 +16,12 @@ import { quote, toSats, type Quote, type SatPriceTable } from "@/lib/domain/rate
 // The benefit
 // ───────────────────────────────────────────────────────────────────────────
 
-export type CouponType = "percent" | "fixed" | "multibuy" | "buyXgetY"
+export type CouponType =
+  | "percent"
+  | "fixed"
+  | "multibuy"
+  | "buyXgetY"
+  | "freeItems"
 
 /**
  * Which products a discount applies to.
@@ -52,12 +57,25 @@ export type Benefit =
   | { type: "multibuy"; buyQty: number; payQty: number; productDs?: string[] }
   /** Buy one of A, get one of B free. A === B is legal and equals a 2x1. */
   | { type: "buyXgetY"; buyProductD: string; giftProductD: string }
+  /**
+   * These products, these many units, free. The only benefit with no purchase
+   * condition attached: the coupon IS the product.
+   *
+   * `items` is never empty and never "everything" — the absent-means-all rule
+   * that governs `productDs` would mean giving away the catalog, which nobody
+   * authors on purpose. Each unit is only free if it is in the basket: the
+   * discount is capped at what the shopper actually put there, same as every
+   * other product-conditioned benefit here.
+   */
+  | { type: "freeItems"; items: FreeUnits[] }
 
 export const MAX_COUPON_NAME = 80
 export const MAX_COUPON_DESCRIPTION = 500
 export const MAX_COUPON_IMAGE_URL = 500
 /** A cap high enough for any real promo and low enough to bound the arithmetic. */
 export const MAX_MULTIBUY_QTY = 100
+/** Units of one product a single coupon may hand over. Same reasoning. */
+export const MAX_FREE_QTY = 100
 /** Products one coupon may name. Long enough for a category, short enough to render. */
 export const MAX_COUPON_PRODUCTS = 50
 /** Uses per definition. Guards against a typo'd "1e9" becoming a real column. */
@@ -107,6 +125,41 @@ function parseScope(b: Record<string, unknown>): ParsedScope {
     if (!out.includes(d)) out.push(d)
   }
   return { ok: true, value: out.length > 0 ? out : undefined }
+}
+
+type ParsedItems = { ok: true; value: FreeUnits[] } | { ok: false; reason: string }
+
+/**
+ * Read the product/quantity pairs of a free-items benefit.
+ *
+ * Stricter than `parseScope` on both ends, and each difference is the point of
+ * the type: an empty list here would be "the whole catalog, free" rather than
+ * "the whole catalog, discounted", and a repeated product is ambiguous — two
+ * entries of the same coffee could be 2 or 5, so it is rejected instead of
+ * silently merged into whichever one this function happened to prefer.
+ */
+function parseFreeItems(raw: unknown): ParsedItems {
+  if (!Array.isArray(raw)) return { ok: false, reason: "la lista de productos no es válida" }
+  if (raw.length === 0) return { ok: false, reason: "elegí al menos un producto" }
+  if (raw.length > MAX_COUPON_PRODUCTS) {
+    return { ok: false, reason: `no más de ${MAX_COUPON_PRODUCTS} productos` }
+  }
+  const out: FreeUnits[] = []
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) {
+      return { ok: false, reason: "hay un producto que no es válido" }
+    }
+    const { d, qty } = entry as Record<string, unknown>
+    if (!isProductD(d)) return { ok: false, reason: "hay un producto que no es válido" }
+    if (!isPositiveInt(qty, MAX_FREE_QTY)) {
+      return { ok: false, reason: `las cantidades van de 1 a ${MAX_FREE_QTY}` }
+    }
+    if (out.some((i) => i.d === d)) {
+      return { ok: false, reason: "hay un producto repetido" }
+    }
+    out.push({ d, qty })
+  }
+  return { ok: true, value: out }
 }
 
 /** Spread a scope into an object literal only when it exists. */
@@ -186,6 +239,12 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
       return { ok: true, value: { type: "buyXgetY", buyProductD, giftProductD } }
     }
 
+    case "freeItems": {
+      const items = parseFreeItems(b.items)
+      if (!items.ok) return bad(items.reason)
+      return { ok: true, value: { type: "freeItems", items: items.value } }
+    }
+
     default:
       return bad("tipo de cupón desconocido")
   }
@@ -196,7 +255,12 @@ export function parseBenefit(raw: unknown): ParsedBenefit {
 // ───────────────────────────────────────────────────────────────────────────
 
 /** The enum stored in Postgres. Snake case there, camel in the union. */
-export type CouponTypeColumn = "percent" | "fixed" | "multibuy" | "buy_x_get_y"
+export type CouponTypeColumn =
+  | "percent"
+  | "fixed"
+  | "multibuy"
+  | "buy_x_get_y"
+  | "free_items"
 
 export interface BenefitColumns {
   type: CouponTypeColumn
@@ -209,6 +273,13 @@ export interface BenefitColumns {
   productDs: string[] | null
   buyProductD: string | null
   giftProductD: string | null
+  /**
+   * free_items: what is handed over, with quantities. A second jsonb column
+   * rather than a qty tacked onto `product_ds`, because the two mean opposite
+   * things — one narrows a discount, the other IS the discount — and a shared
+   * column would make every reader check `type` before knowing which.
+   */
+  freeItems: FreeUnits[] | null
 }
 
 const EMPTY_COLUMNS: Omit<BenefitColumns, "type"> = {
@@ -220,6 +291,7 @@ const EMPTY_COLUMNS: Omit<BenefitColumns, "type"> = {
   productDs: null,
   buyProductD: null,
   giftProductD: null,
+  freeItems: null,
 }
 
 export function benefitToColumns(b: Benefit): BenefitColumns {
@@ -256,6 +328,8 @@ export function benefitToColumns(b: Benefit): BenefitColumns {
         buyProductD: b.buyProductD,
         giftProductD: b.giftProductD,
       }
+    case "freeItems":
+      return { ...EMPTY_COLUMNS, type: "free_items", freeItems: b.items }
   }
 }
 
@@ -294,6 +368,8 @@ export function benefitFromColumns(row: Partial<BenefitColumns>): ParsedBenefit 
         buyProductD: row.buyProductD,
         giftProductD: row.giftProductD,
       })
+    case "free_items":
+      return parseBenefit({ type: "freeItems", items: row.freeItems })
     default:
       return bad("tipo de cupón desconocido")
   }
@@ -387,6 +463,16 @@ export function describeBenefit(
         : `${b.buyQty}x${b.payQty} en cualquier producto`
     case "buyXgetY":
       return `Comprá ${name(b.buyProductD)} y llevate ${name(b.giftProductD)} gratis`
+    case "freeItems": {
+      // One product names itself; a list would run past the width of the card
+      // it renders in, so it counts units instead.
+      if (b.items.length === 1) {
+        const { d, qty } = b.items[0]!
+        return `${qty > 1 ? `${qty} × ` : ""}${name(d)} gratis`
+      }
+      const units = b.items.reduce((n, i) => n + i.qty, 0)
+      return `${units} productos gratis`
+    }
   }
 }
 
@@ -508,6 +594,18 @@ export function freeUnitsFor(
       .filter((f) => f.qty > 0)
   }
 
+  if (benefit.type === "freeItems") {
+    // Capped at what is in the basket: a coupon for three coffees against a
+    // cart holding one gives one coffee, never a discount for two that are
+    // not there.
+    return benefit.items
+      .map((i) => ({
+        d: i.d,
+        qty: Math.min(i.qty, lines.find((l) => l.d === i.d)?.qty ?? 0),
+      }))
+      .filter((f) => f.qty > 0)
+  }
+
   if (benefit.type === "buyXgetY") {
     const buy = lines.find((l) => l.d === benefit.buyProductD)
     const gift = lines.find((l) => l.d === benefit.giftProductD)
@@ -550,6 +648,14 @@ function missingProducts(
     const best = shortfalls.reduce((a, b) => (b.qty < a.qty ? b : a))
     return [best]
   }
+  if (benefit.type === "freeItems") {
+    // Only reachable with nothing to give, so every unit short is worth
+    // naming: any one of them turns the coupon on, hence `anyOf` below.
+    return benefit.items
+      .map((i) => ({ d: i.d, qty: i.qty - (lines.find((l) => l.d === i.d)?.qty ?? 0) }))
+      .filter((f) => f.qty > 0)
+  }
+
   if (benefit.type === "buyXgetY") {
     const out: FreeUnits[] = []
     const buy = lines.find((l) => l.d === benefit.buyProductD)
@@ -603,7 +709,8 @@ export function discountEntries(
     }
 
     case "multibuy":
-    case "buyXgetY": {
+    case "buyXgetY":
+    case "freeItems": {
       const free = freeUnitsFor(lines, benefit)
       const out: DiscountEntry[] = []
       for (const f of free) {
@@ -662,9 +769,13 @@ export function priceCart(
   const entries = discountEntries(lines, coupon.benefit)
   if (entries.length === 0) {
     const products = missingProducts(lines, coupon.benefit)
-    // Scoped percent/fixed coupons take whichever named product shows up;
-    // multibuy and buyXgetY name what they specifically require.
-    const anyOf = coupon.benefit.type === "percent" || coupon.benefit.type === "fixed"
+    // Scoped percent/fixed coupons take whichever named product shows up, and
+    // free items apply one by one; multibuy and buyXgetY name what they
+    // specifically require.
+    const anyOf =
+      coupon.benefit.type === "percent" ||
+      coupon.benefit.type === "fixed" ||
+      coupon.benefit.type === "freeItems"
     return none(
       products.length > 0
         ? { kind: "needs-products", products, anyOf }

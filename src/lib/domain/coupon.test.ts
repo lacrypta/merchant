@@ -90,6 +90,26 @@ describe("parseBenefit", () => {
     ).toBe(true)
   })
 
+  it("takes free items with their quantities", () => {
+    expect(
+      parseBenefit({ type: "freeItems", items: [{ d: D1, qty: 2 }, { d: D2, qty: 1 }] }).ok
+    ).toBe(true)
+  })
+
+  it("refuses free items that are empty, repeated, or not a whole quantity", () => {
+    // Empty would be "the whole catalog, free" — the absent-means-all rule that
+    // governs productDs must not reach this type.
+    expect(parseBenefit({ type: "freeItems", items: [] }).ok).toBe(false)
+    expect(
+      parseBenefit({ type: "freeItems", items: [{ d: D1, qty: 1 }, { d: D1, qty: 2 }] }).ok
+    ).toBe(false)
+    expect(parseBenefit({ type: "freeItems", items: [{ d: D1, qty: 0 }] }).ok).toBe(false)
+    expect(parseBenefit({ type: "freeItems", items: [{ d: D1, qty: 1.5 }] }).ok).toBe(false)
+    expect(parseBenefit({ type: "freeItems", items: [{ d: "nope", qty: 1 }] }).ok).toBe(false)
+    expect(parseBenefit({ type: "freeItems", items: [{ d: D1 }] }).ok).toBe(false)
+    expect(parseBenefit({ type: "freeItems", items: "todo" }).ok).toBe(false)
+  })
+
   it("rejects unknown types and non-objects", () => {
     expect(parseBenefit({ type: "bogo" }).ok).toBe(false)
     expect(parseBenefit(null).ok).toBe(false)
@@ -105,6 +125,8 @@ describe("column round-trip", () => {
     { type: "multibuy", buyQty: 3, payQty: 2 },
     { type: "multibuy", buyQty: 2, payQty: 1, productDs: [D1] },
     { type: "buyXgetY", buyProductD: D1, giftProductD: D2 },
+    { type: "freeItems", items: [{ d: D1, qty: 2 }] },
+    { type: "freeItems", items: [{ d: D1, qty: 1 }, { d: D2, qty: 3 }] },
   ]
 
   for (const benefit of cases) {
@@ -178,6 +200,21 @@ describe("describeBenefit", () => {
       describeBenefit({ type: "buyXgetY", buyProductD: D1, giftProductD: D2 }, titleOf)
     ).toBe("Comprá Empanada y llevate un producto gratis")
   })
+
+  it("names a single free product and counts units for a list", () => {
+    expect(describeBenefit({ type: "freeItems", items: [{ d: D1, qty: 1 }] }, titleOf)).toBe(
+      "Empanada gratis"
+    )
+    expect(describeBenefit({ type: "freeItems", items: [{ d: D1, qty: 3 }] }, titleOf)).toBe(
+      "3 × Empanada gratis"
+    )
+    expect(
+      describeBenefit(
+        { type: "freeItems", items: [{ d: D1, qty: 2 }, { d: D2, qty: 1 }] },
+        titleOf
+      )
+    ).toBe("3 productos gratis")
+  })
 })
 
 describe("freeUnitsFor", () => {
@@ -219,6 +256,25 @@ describe("freeUnitsFor", () => {
     const b: Benefit = { type: "buyXgetY", buyProductD: D1, giftProductD: D1 }
     expect(freeUnitsFor([line({ qty: 1 })], b)).toEqual([])
     expect(freeUnitsFor([line({ qty: 2 })], b)).toEqual([{ d: D1, qty: 1 }])
+  })
+
+  it("hands over free items with no purchase condition", () => {
+    const b: Benefit = { type: "freeItems", items: [{ d: D1, qty: 2 }] }
+    expect(freeUnitsFor([line({ qty: 2 })], b)).toEqual([{ d: D1, qty: 2 }])
+  })
+
+  it("never gives more free items than the basket holds", () => {
+    const b: Benefit = { type: "freeItems", items: [{ d: D1, qty: 3 }] }
+    expect(freeUnitsFor([line({ qty: 1 })], b)).toEqual([{ d: D1, qty: 1 }])
+    expect(freeUnitsFor([line({ d: D2, qty: 9 })], b)).toEqual([])
+  })
+
+  it("applies free items one by one — one missing does not sink the others", () => {
+    const b: Benefit = {
+      type: "freeItems",
+      items: [{ d: D1, qty: 1 }, { d: D2, qty: 2 }],
+    }
+    expect(freeUnitsFor([line({ qty: 1 })], b)).toEqual([{ d: D1, qty: 1 }])
   })
 })
 
@@ -376,6 +432,32 @@ describe("priceCart", () => {
     )
     expect(priced.freeUnits).toEqual([{ d: D1, qty: 1 }])
     expect(priced.net.sats).toBe(100)
+  })
+
+  it("takes the free items off the bill at their own line price", () => {
+    // Two empanadas at 100 ARS and one 250 ARS coffee; the coupon gives away
+    // one of each, so the shopper pays for the second empanada alone.
+    const priced = priceCart(
+      [line({ qty: 2 }), line({ d: D2, unitAmount: 250, title: "Café" })],
+      applied({ type: "freeItems", items: [{ d: D1, qty: 1 }, { d: D2, qty: 1 }] }),
+      TABLE
+    )
+    expect(priced.entries).toEqual([{ currency: "ARS", amount: 350 }])
+    expect(priced.freeUnits).toEqual([{ d: D1, qty: 1 }, { d: D2, qty: 1 }])
+    expect(priced.net.sats).toBe(100)
+  })
+
+  it("asks for any one of the free products, not all of them", () => {
+    const priced = priceCart(
+      [line({ d: D3 })],
+      applied({ type: "freeItems", items: [{ d: D1, qty: 1 }, { d: D2, qty: 2 }] }),
+      TABLE
+    )
+    expect(priced.unmet).toEqual({
+      kind: "needs-products",
+      products: [{ d: D1, qty: 1 }, { d: D2, qty: 2 }],
+      anyOf: true,
+    })
   })
 })
 
