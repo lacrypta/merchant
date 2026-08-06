@@ -82,7 +82,7 @@ export async function PUT(request: Request) {
   if (!verifySignedEvent(event)) {
     return fail("La firma del evento no es válida.", 400, METHODS)
   }
-  const parsed = parseCouponDiscovery(event.content)
+  const parsed = parseCouponDiscovery(event)
   if (!parsed.ok) {
     return fail(`El anuncio no se puede leer: ${parsed.reason}.`, 400, METHODS)
   }

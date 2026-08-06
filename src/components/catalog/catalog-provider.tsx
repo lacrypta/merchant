@@ -16,6 +16,7 @@ import {
   type CatalogDiff,
   type CatalogSnapshot,
 } from "@/lib/domain/catalog-diff"
+import { COUPON_DISCOVERY_D } from "@/lib/domain/coupon-discovery"
 import { KINDS } from "@/lib/domain/kinds"
 import {
   WOO_CONFIG_D,
@@ -221,7 +222,13 @@ async function readCatalog(
         // Scoped to OUR `d` tags: kind 30078 is shared by every app that
         // stores per-user data, and pulling all of them would drag down
         // unrelated blobs on every catalog load.
-        "#d": [WOO_CONFIG_D, WOO_SYNC_D],
+        //
+        // The coupon announcement is in here because it is the one 30078 that
+        // somebody else reads: what the relays hold IS what a third-party POS
+        // sees, so the coupons card has to compare its stored copy against it
+        // and win by created_at. Without this `d` that comparison ran against
+        // nothing.
+        "#d": [WOO_CONFIG_D, WOO_SYNC_D, COUPON_DISCOVERY_D],
       },
     ],
     readUrls,
