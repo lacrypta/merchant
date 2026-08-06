@@ -173,7 +173,7 @@ export function useCouponService(
     const origin =
       process.env.NEXT_PUBLIC_APP_URL?.replace(/\/+$/, "") || window.location.origin
     return {
-      v: 1,
+      v: 2,
       managerPubkey: managerQuery.data.pubkey,
       ...couponEndpoints(origin),
     }
@@ -192,7 +192,7 @@ export function useCouponService(
     }
     if (!current) return { kind: "inactive", desired }
 
-    const parsed = parseCouponDiscovery(current.content)
+    const parsed = parseCouponDiscovery(current)
     if (!parsed.ok) return { kind: "unreadable", desired, reason: parsed.reason }
 
     const same =

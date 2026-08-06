@@ -19,14 +19,31 @@ import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
  * else has to be able to read it. There is nothing secret in it — the mint
  * endpoint is protected by NIP-98 and an authorized-npub list, not by the URL
  * being hard to find.
+ *
+ * THE MANAGER KEY IS A `p` TAG, not a field of the JSON. A relay indexes tags;
+ * it cannot index a field inside a content string. So "which merchants named
+ * this service?" is a filter anyone can run, instead of downloading every
+ * announcement in existence and parsing them one by one.
+ *
+ * But NEVER SUBSCRIBE BY `#p`. This event is addressable: asking a relay for
+ * "the announcement that names me" can hand back an OLDER version while the
+ * merchant's current one names somebody else — and a service that reads that
+ * would believe it still handles coupons it no longer handles. Always fetch the
+ * newest by author + `d`, and compare the `p` afterwards.
  */
 
 /** Our `d` tag. Kind 30078 is shared by every app; the `d` is the whole fence. */
 export const COUPON_DISCOVERY_D = "lacrypta.merchant/coupons"
 
 export interface CouponDiscovery {
-  v: 1
-  /** Hex pubkey of the service that signs vouchers. Verify them against this. */
+  v: 2
+  /**
+   * Hex pubkey of the service that signs vouchers. Verify them against this.
+   *
+   * On the wire it is the `p` tag, not a key of the content JSON — this
+   * interface is the domain vocabulary, and only `couponDiscoveryEventBody`
+   * and `parseCouponDiscovery` know where each half lives.
+   */
   managerPubkey: string
   /** Absolute URL. POST, NIP-98, authorized npubs only. */
   mintUrl: string
@@ -61,26 +78,40 @@ function normalizeEndpoint(raw: unknown): string | null {
 }
 
 /**
- * Parse the announcement.
+ * Parse the announcement — the whole event, because half of it is a tag.
  *
- * Any version other than 1 is DISCARDED, never migrated — same rule as the cart
+ * Takes the event structurally rather than a `SignedEvent`, so an unsigned body
+ * parses too and every caller can pass what it already has.
+ *
+ * Any version other than 2 is DISCARDED, never migrated — same rule as the cart
  * and the Woo config. A half-understood announcement means pointing a cashier's
  * terminal at a URL we guessed the meaning of.
+ *
+ * The version is checked BEFORE the tag on purpose. A v1 announcement has no
+ * `p` either, and "falta el tag p" tells a merchant nothing about why the
+ * announcement they signed months ago stopped working.
  */
-export function parseCouponDiscovery(content: string): ParsedDiscovery {
+export function parseCouponDiscovery(
+  e: Pick<EventTemplate, "tags" | "content">
+): ParsedDiscovery {
   let raw: unknown
   try {
-    raw = JSON.parse(content)
+    raw = JSON.parse(e.content)
   } catch {
     return { ok: false, reason: "no es JSON" }
   }
   if (!raw || typeof raw !== "object") return { ok: false, reason: "no es un objeto" }
 
-  const c = raw as Partial<CouponDiscovery>
-  if (c.v !== 1) return { ok: false, reason: `versión desconocida: ${String(c.v)}` }
+  // Typed as unknown rather than Partial<CouponDiscovery>: this is somebody
+  // else's JSON, and the v1 branch below exists precisely to read a version the
+  // interface no longer admits.
+  const c = raw as { v?: unknown; mintUrl?: unknown; claimUrl?: unknown }
+  if (c.v === 1) return { ok: false, reason: "formato viejo, v1" }
+  if (c.v !== 2) return { ok: false, reason: `versión desconocida: ${String(c.v)}` }
 
-  if (typeof c.managerPubkey !== "string" || !HEX64.test(c.managerPubkey)) {
-    return { ok: false, reason: "managerPubkey inválido" }
+  const managerPubkey = tagValue(e, "p")
+  if (!managerPubkey || !HEX64.test(managerPubkey)) {
+    return { ok: false, reason: "falta el tag p con la clave del manager" }
   }
   const mintUrl = normalizeEndpoint(c.mintUrl)
   if (!mintUrl) return { ok: false, reason: "mintUrl inválido" }
@@ -90,16 +121,12 @@ export function parseCouponDiscovery(content: string): ParsedDiscovery {
   return {
     ok: true,
     value: {
-      v: 1,
-      managerPubkey: c.managerPubkey.toLowerCase(),
+      v: 2,
+      managerPubkey: managerPubkey.toLowerCase(),
       mintUrl,
       claimUrl,
     },
   }
-}
-
-export function serializeCouponDiscovery(c: CouponDiscovery): string {
-  return JSON.stringify(c)
 }
 
 /** The two endpoints, derived from wherever this deployment is reachable. */
@@ -125,13 +152,20 @@ export function isOurCouponDiscovery(e: SignedEvent, pubkey: string): boolean {
   )
 }
 
-/** The timestamp-free half. Same split as `productEventBody`. */
+/**
+ * The timestamp-free half. Same split as `productEventBody`.
+ *
+ * The ONLY place that knows the manager key travels as a tag. There is no
+ * `serializeCouponDiscovery` any more: a function that stringifies the whole
+ * interface would compile forever and silently drop the pubkey.
+ */
 export function couponDiscoveryEventBody(c: CouponDiscovery): EventBody {
   return {
     kind: KINDS.APP_DATA,
-    content: serializeCouponDiscovery(c),
+    content: JSON.stringify({ v: c.v, mintUrl: c.mintUrl, claimUrl: c.claimUrl }),
     tags: [
       ["d", COUPON_DISCOVERY_D],
+      ["p", c.managerPubkey],
       ["client", "merchant-manager"],
     ],
   }

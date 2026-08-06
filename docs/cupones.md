@@ -97,24 +97,31 @@ Lo firma **el comerciante con su propia clave**. Es lo único que hace que una c
   "pubkey": "<hex del comerciante>",
   "tags": [
     ["d", "lacrypta.merchant/coupons"],   // el `d` es toda la cerca
+    ["p", "<hex del manager>"],           // quién firma los vouchers, indexable
     ["client", "merchant-manager"]
   ],
-  "content": "{\"v\":1,\"managerPubkey\":\"…\",\"mintUrl\":\"…\",\"claimUrl\":\"…\"}"
+  "content": "{\"v\":2,\"mintUrl\":\"…\",\"claimUrl\":\"…\"}"
 }
 ```
 
 El `content` es **texto plano**. Todos los demás 30078 de esta app van cifrados con NIP-44 hacia el propio comerciante porque llevan credenciales; este es lo contrario: es un anuncio, y un POS de otra persona tiene que poder leerlo. No hay nada secreto adentro — el endpoint de emisión está protegido por NIP-98 y una lista de npubs autorizados, no porque la URL sea difícil de encontrar.
 
-| Campo | Qué es |
-|---|---|
-| `v` | `1`. Otra versión se **descarta**, nunca se migra a medias |
-| `managerPubkey` | Hex de la clave que firma los vouchers. Contra esta se verifican |
-| `mintUrl` | Absoluta. POST, NIP-98, sólo npubs autorizados |
-| `claimUrl` | Absoluta. GET para consultar, POST para canjear |
+| Dónde | Campo | Qué es |
+|---|---|---|
+| tag | `p` | Hex de la clave que firma los vouchers. Contra esta se verifican |
+| content | `v` | `2`. Otra versión se **descarta**, nunca se migra a medias |
+| content | `mintUrl` | Absoluta. POST, NIP-98, sólo npubs autorizados |
+| content | `claimUrl` | Absoluta. GET para consultar, POST para canjear |
 
 Las URLs tienen que ser `https`, con la excepción de `localhost`/`127.0.0.1` para poder ejercitar el flujo completo contra `npm run dev` sin un túnel.
 
 Kind 30078 es *addressable*, así que mudarse de host es editar un evento y no una migración que nadie puede coordinar.
+
+**Por qué la clave del manager es un tag y no un campo.** Un relay indexa tags; no puede indexar un campo adentro de un string. Con `p` afuera, *"¿qué comercios nombraron a este servicio?"* es un filtro que cualquiera puede correr —`{"kinds":[30078],"#d":["lacrypta.merchant/coupons"],"#p":["<manager>"]}`— en vez de bajarse todos los anuncios del mundo y parsearlos de a uno.
+
+> **Cómo leerlo bien, si estás escribiendo un cliente.** Pedí siempre el **más nuevo** por autor + `d`, y recién ahí mirá el `p`. **Nunca te suscribas filtrando por `#p`**: el evento es addressable, y preguntar "dame el anuncio que me nombra" puede devolver una versión **anterior** mientras la vigente nombra a otro servicio. Un POS que lea eso va a creer que sigue siendo el responsable de cupones que ya no le corresponden. El orden importa: primero el último, después de quién es.
+
+**Los anuncios `v1` ya no valen.** La versión anterior llevaba `managerPubkey` adentro del `content` y no tenía tag `p`; parsear a medias un anuncio significa mandar una caja a una URL cuyo significado adivinamos, así que se descartan enteros. Cada comerciante tiene que **volver a firmar**: el panel se lo pide solo —"No pudimos leer el anuncio publicado (formato viejo, v1). Reactivalo para reemplazarlo"— y hasta que lo haga no puede crear cupones ni su tienda muestra la caja de canje.
 
 **Dónde vive.** En los relays *y* en nuestra base (`coupon_discovery`, una fila por comerciante, el evento firmado tal cual). Los relays no son almacenamiento que controlemos: pierden eventos, se caen, y una lectura puede no traer uno que sí está publicado. La copia local es la que responde al cargar la página; los relays se verifican contra ella, y si falta se **reenvía solo** — sin pedir firma, porque los bytes ya están firmados.
 
@@ -143,8 +150,8 @@ Lo firma **este servidor** con `COUPON_MANAGER_NSEC`, y viaja en la respuesta JS
 
 Cómo verificarlo, sin llamarnos:
 
-1. Leer el anuncio 30078 del comerciante → `managerPubkey`.
-2. `voucher.pubkey === managerPubkey`.
+1. Leer el anuncio 30078 **más nuevo** del comerciante → el tag `p`.
+2. `voucher.pubkey === p`.
 3. Verificar la firma del evento (re-derivando el id, sin confiar en memos de la librería).
 4. Parsear el `content` y comparar `nonce` y `coupon` con lo que se recibió.
 
@@ -279,6 +286,7 @@ Comerciante            Esta app                    Base            Relays
     ├────────────────────►│ GET /api/coupons/manager │               │
     │                     │◄─── managerPubkey ───────┤               │
     │  firma el 30078     │                          │               │
+    │  (con `p` = manager)│                          │               │
     │◄────────────────────┤                          │               │
     ├────────────────────►│ PUT /discovery ─────────►│ guarda        │
     │                     ├─────────── publica ──────────────────────►│
@@ -295,14 +303,14 @@ Al cargar la página se le pregunta **a cada relay por separado** si tiene el ev
 ```
 POS                        Relays              Este servicio
  │  lee el 30078 del npub    │                      │
- ├──────────────────────────►│                      │
- │◄── mintUrl, claimUrl ─────┤                      │
+ ├──────────────────────────►│   (el más nuevo,     │
+ │◄── p, mintUrl, claimUrl ──┤    sin filtrar #p)   │
  │                                                  │
  │  POST mintUrl  (NIP-98, npub autorizado)         │
  ├─────────────────────────────────────────────────►│
  │◄── coupon, name, npub, nonce, voucher ───────────┤
  │                                                  │
- │  verifica voucher.pubkey === managerPubkey       │
+ │  verifica voucher.pubkey === tag `p`             │
  │  muestra el QR con el nonce                      │
  │                                                  │
  │  POST claimUrl { nonce }                         │

@@ -48,7 +48,7 @@ Todas opcionales: sin ninguna, el catálogo y la tienda funcionan igual. Van en 
 | `30405` | Categoría ([GammaMarkets](https://github.com/GammaMarkets/market-spec/blob/main/spec.md), la extensión de e-commerce que el propio NIP-99 enlaza) |
 | `5` | Borrado (NIP-09) |
 | `0` · `10002` · `10063` | Perfil · relays NIP-65 · servidores Blossom |
-| `30078` | Datos de la app (NIP-78): config de WooCommerce (cifrada) y endpoints de cupones (en claro) |
+| `30078` | Datos de la app (NIP-78): config de WooCommerce (cifrada) y endpoints de cupones (en claro, con la clave del servicio en un tag `p` indexable) |
 | `27235` | Autenticación HTTP (NIP-98). Se firma una vez por sesión y después va un JWT |
 | `20402` | Cupón firmado por este servicio. Nunca se publica: viaja en la respuesta HTTP. |
 
@@ -65,7 +65,7 @@ Decisiones que no son obvias y conviene no revertir sin leer el porqué:
 
 Cinco tipos: **porcentaje**, **monto fijo** (ARS/USD/SAT), **NxM** (2x1, 3x2…), **comprá A, llevate B gratis**, y **producto gratis** (los productos y cantidades que elijas, sin comprar nada a cambio). Los tres primeros pueden limitarse a productos puntuales; sin productos elegidos valen para toda la compra.
 
-El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
+El comerciante **activa el servicio** firmando un kind-30078 que dice dónde emitir y canjear, y nombra en un tag `p` a la clave que firma los vouchers. Ese evento es lo único que hace que una caja ajena pueda encontrar este servidor, y hasta que exista no se pueden crear cupones.
 
 Es la única parte de la app con base de datos, y el motivo es corto: *"¿este cupón ya se usó?"* tiene que tener una sola respuesta en el instante en que dos cajas la preguntan, y los relays son consistentes-eventualmente por diseño.
 
