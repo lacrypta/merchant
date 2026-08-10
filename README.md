@@ -32,7 +32,7 @@ All optional: with none of them, the catalog and the storefront work the same. T
 
 | Variable | What for |
 |---|---|
-| `DATABASE_URL` | Postgres, **only** for coupons. Without it, `/api/coupons/*` answers 503 and the rest of the app runs fine. This is the direct connection: migrations run over it. |
+| `DATABASE_URL` | Postgres, **only** for coupons. Without it, `/api/coupons/*` answers 503 and the rest of the app runs fine. The direct connection. When both are set, the app **and** the migrations use `DATABASE_POOL_URL`. |
 | `DATABASE_POOL_URL` | The pooler for the same Postgres, if the provider offers one. The app prefers it for queries: on serverless every instance opens its own pool, and against the direct connection that exhausts the limit (or never connects at all — on Supabase the direct host is IPv6-only). |
 | `COUPON_MANAGER_NSEC` | This service's nostr identity: it signs the coupons it issues. Without it, nothing can be minted or redeemed. |
 | `NEXT_PUBLIC_APP_URL` | The public origin. In production **set it**: it is the only thing that makes NIP-98 validation ignore the `x-forwarded-*` headers, which anyone can forge. |
@@ -48,7 +48,7 @@ All optional: with none of them, the catalog and the storefront work the same. T
 | `30405` | Category ([GammaMarkets](https://github.com/GammaMarkets/market-spec/blob/main/spec.md), the e-commerce extension NIP-99 itself links to) |
 | `5` | Deletion (NIP-09) |
 | `0` · `10002` · `10063` | Profile · NIP-65 relays · Blossom servers |
-| `30078` | App data (NIP-78): WooCommerce config (encrypted) and coupon endpoints (in the clear) |
+| `30078` | App data (NIP-78): WooCommerce config (encrypted) and coupon endpoints (in the clear, with the service's key in an indexable `p` tag) |
 | `27235` | HTTP auth (NIP-98). Signed once per session, then a JWT takes over |
 | `20402` | Coupon signed by this service. Never published: it travels in the HTTP response. |
 
@@ -65,7 +65,7 @@ Decisions that are not obvious and should not be reverted without reading why:
 
 Five types: **percentage**, **fixed amount** (ARS/USD/SAT), **NxM** (2-for-1, 3-for-2…), **buy A, get B free**, and **free product** (the products and quantities you choose, with nothing to buy in return). The first three can be narrowed to specific products; with no products chosen they apply to the whole basket. Any of the five accepts an optional **discount cap** — "20% off, up to ARS 5,000".
 
-The merchant **activates the service** by signing a kind-30078 that says where to mint and where to redeem. That event is the only thing that lets somebody else's till find this server, and until it exists no coupons can be created.
+The merchant **activates the service** by signing a kind-30078 that says where to mint and where to redeem, and names the voucher-signing key in a `p` tag. That event is the only thing that lets somebody else's till find this server, and until it exists no coupons can be created.
 
 It is the only part of the app with a database, and the reason is short: *"has this coupon been used?"* has to have exactly one answer at the instant two tills ask it, and relays are eventually-consistent by design.
 
@@ -97,9 +97,9 @@ npm run db:generate   # after touching the schema
 npm run db:migrate    # by hand; the deploy already does it
 ```
 
-`npm run build` runs the migrations before compiling **if `DATABASE_URL` is set**, and
+`npm run build` runs the migrations before compiling **if `DATABASE_URL` or `DATABASE_POOL_URL` is set**, and
 fails the build if they do not apply: a deploy against an old schema breaks more quietly.
-Without `DATABASE_URL` nothing migrates and it compiles all the same.
+With neither, nothing migrates and it compiles all the same.
 
 Without those variables the app still starts and the coupon endpoints answer `503`: having no database is a supported state.
 

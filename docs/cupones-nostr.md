@@ -4,7 +4,7 @@ Two. One is signed by the merchant and published; the other is signed by this se
 
 | Kind | Who signs it | Published | What for |
 |---|---|---|---|
-| `30078` | The merchant | Yes | Saying where the coupon service lives |
+| `30078` | The merchant | Yes | Saying where the coupon service lives, and naming its key |
 | `20402` | This server (manager) | No | Proving a coupon came from that service |
 
 ---
@@ -20,9 +20,10 @@ Signed by **the merchant, with their own key**. It is the only thing that lets s
   "created_at": 1762041600,
   "tags": [
     ["d", "lacrypta.merchant/coupons"],   // the `d` is the whole fence
+    ["p", "9f5c4e2ab13d7f60c8a4e9021b6d5f38a7c04e91d2b8635fa0c7e41d9b6532af"],
     ["client", "merchant-manager"]
   ],
-  "content": "{\"v\":1,\"managerPubkey\":\"9f5c…32af\",\"mintUrl\":\"https://merchant.lacrypta.ar/api/coupons/mint\",\"claimUrl\":\"https://merchant.lacrypta.ar/api/coupons/claim\"}",
+  "content": "{\"v\":2,\"mintUrl\":\"https://merchant.lacrypta.ar/api/coupons/mint\",\"claimUrl\":\"https://merchant.lacrypta.ar/api/coupons/claim\"}",
   "id": "…", "sig": "…"
 }
 ```
@@ -31,19 +32,26 @@ The parsed `content`:
 
 ```json
 {
-  "v": 1,
-  "managerPubkey": "9f5c4e2ab13d7f60c8a4e9021b6d5f38a7c04e91d2b8635fa0c7e41d9b6532af",
+  "v": 2,
   "mintUrl": "https://merchant.lacrypta.ar/api/coupons/mint",
   "claimUrl": "https://merchant.lacrypta.ar/api/coupons/claim"
 }
 ```
 
-| Field | What it is |
-|---|---|
-| `v` | `1`. Any other version is **discarded**, never half-migrated |
-| `managerPubkey` | Hex of the key that signs vouchers. They are verified against this |
-| `mintUrl` | Absolute. POST, NIP-98, authorized npubs only |
-| `claimUrl` | Absolute. GET to check, POST to redeem |
+**The announcement is half content and half tag.** `CouponDiscovery` in the domain layer carries all four fields together; only `couponDiscoveryEventBody` and `parseCouponDiscovery` know where each half lives on the wire.
+
+| Where | Field | What it is |
+|---|---|---|
+| content | `v` | `2`. Any other version is **discarded**, never half-migrated |
+| tag | `p` | Hex of the key that signs vouchers. They are verified against this |
+| content | `mintUrl` | Absolute. POST, NIP-98, authorized npubs only |
+| content | `claimUrl` | Absolute. GET to check, POST to redeem |
+
+**Why the manager key is a tag and not a field.** A relay indexes tags; it cannot index a field inside a content string. With `p` on the outside, *"which merchants named this service?"* is a filter anybody can run — `{"kinds":[30078],"#d":["lacrypta.merchant/coupons"],"#p":["<manager>"]}` — instead of downloading every announcement in existence and parsing them one by one.
+
+> **How to read it correctly, if you are writing a client.** Always fetch the **newest** by author + `d`, and only then look at the `p`. **Never subscribe filtering by `#p`**: the event is addressable, and asking for "the announcement that names me" can hand back an **older** version while the current one names somebody else. A POS reading that would believe it is still responsible for coupons that are no longer its own. The order matters: newest first, whose second.
+
+**`v1` announcements are dead.** The previous version carried `managerPubkey` inside the `content` and had no `p` tag; half-parsing an announcement means sending a till to a URL whose meaning we guessed, so they are discarded whole. Every merchant has to **re-sign**: the dashboard asks for it on its own — "No pudimos leer el anuncio publicado (formato viejo, v1). Reactivalo para reemplazarlo" — and until they do, they can neither create coupons nor show the redemption box in their storefront.
 
 **The `content` is plaintext.** Every other 30078 in this app is NIP-44 encrypted to the merchant themselves because it carries credentials; this one is the opposite: it is an announcement, and somebody else's POS has to be able to read it. There is nothing secret inside — the mint endpoint is protected by NIP-98 and a list of authorized npubs, not by the URL being hard to find.
 
@@ -111,11 +119,11 @@ Optional keys are **omitted**, not sent as `null`. `parseVoucherContent` discard
 ```js
 import { verifyEvent } from "nostr-tools/pure"
 
-// 1. Read the merchant's 30078 → managerPubkey
-const discovery = JSON.parse(announcement.content)
+// 1. Read the merchant's NEWEST 30078 (by author + `d`) → its `p` tag
+const managerPubkey = announcement.tags.find((t) => t[0] === "p")?.[1]
 
 // 2. The voucher has to come from that key
-if (voucher.pubkey !== discovery.managerPubkey) throw new Error("different issuer")
+if (voucher.pubkey !== managerPubkey) throw new Error("different issuer")
 
 // 3. Valid signature — re-deriving the id, not trusting library memos
 if (!verifyEvent(voucher)) throw new Error("invalid signature")

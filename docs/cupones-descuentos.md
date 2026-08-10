@@ -85,9 +85,9 @@ It applies to **every** type on purpose: a 2-for-1 on a case of wine and an expe
 
 Rules:
 
-- **It clamps the entry in its own currency and leaves the rest alone.** The same rule `fixed` already follows, and for the same reason: converting would need the rate table that layer deliberately does not take, and guessing at a number is worse than applying the ceiling where it was authored. Every real basket is single-currency, where this is exactly "up to ARS 5,000".
+- **It clamps the entries in its own currency and leaves the other currencies untouched.** The same rule `fixed` already follows, and for the same reason: converting would need the rate table that layer deliberately does not take, and guessing at a number is worse than applying the ceiling where it was authored. On a single-currency basket — the common case — that is exactly "up to ARS 5,000". On a mixed one, an ARS ceiling bounds the ARS share and the USD lines keep whatever the terms gave them.
 - **In the order book it is spread proportionally** across the lines (`discountByLine`), not cut off the first one: the ceiling is a property of the whole discount, and taking it out of one product would report that product as having absorbed a cut it never had.
-- **`0` is not a cap**, it is "no cap". A ceiling of zero would be a coupon that discounts nothing, which nobody authors on purpose.
+- **An absent `cap` — or a `null` one — means no ceiling. `0` is rejected**, not treated as absent: a ceiling of zero would be a coupon that discounts nothing, so `parseBenefit` answers `el tope tiene que ser mayor a 0` rather than silently ignoring it.
 - In sats it has to be a **whole number**, same as `fixed`.
 
 An example of the proportional spread: a 50% off with a cap of ARS 500, against two lines of ARS 3,000 and ARS 1,000, would give 1,500 and 500 uncapped; with the cap it gives **375 and 125** — the same proportion over 500.

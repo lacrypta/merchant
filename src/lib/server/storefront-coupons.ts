@@ -9,6 +9,7 @@ import {
 } from "@/lib/domain/coupon-discovery"
 import { KINDS } from "@/lib/domain/kinds"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
+import { getCouponManager } from "@/lib/server/coupon-manager"
 import { queryRelays } from "@/lib/server/relay-read"
 
 /**
@@ -24,6 +25,12 @@ import { queryRelays } from "@/lib/server/relay-read"
  * Its own relay query, not part of the catalog fan-out: it is one addressable
  * event by `d`, it answers in a few hundred milliseconds, and the checkout can
  * render the rest of itself while it lands.
+ *
+ * The manager key is an indexable `p` tag now, and the query still does NOT
+ * filter by it. Asking a relay for "the announcement that names me" can hand
+ * back an older version while the merchant's current one names another service
+ * — and we would show a coupon box for coupons we no longer issue. Newest
+ * first, then check who it names.
  */
 export const getStorefrontCoupons = cache(
   async (
@@ -62,8 +69,22 @@ export const getStorefrontCoupons = cache(
     const newest = events.sort((a, b) => b.created_at - a.created_at)[0]
     if (!newest) return null
 
-    const parsed = parseCouponDiscovery(newest.content)
+    const parsed = parseCouponDiscovery(newest)
     if (!parsed.ok) return null
+
+    /**
+     * Two questions, and both have to answer "us".
+     *
+     * The `p` tag says whose signature the vouchers carry; `servedFromHere`
+     * says whose database holds the nonce. Two deployments sharing a
+     * COUPON_MANAGER_NSEC name the same key and only one can redeem, so the
+     * origin check stays.
+     *
+     * Without a manager key we could not sign a voucher anyway — the coupon
+     * endpoints answer 503 — so the box has no business being on screen.
+     */
+    const manager = getCouponManager()
+    if (!manager || parsed.value.managerPubkey !== manager.pubkey) return null
 
     return servedFromHere(parsed.value) ? parsed.value : null
   }

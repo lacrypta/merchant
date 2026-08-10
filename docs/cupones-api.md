@@ -2,7 +2,7 @@
 
 Full reference: every endpoint with its body, its response and its errors, and the schema of every type it returns.
 
-The examples are real — copied from a run against `npm run dev` — with the identifiers swapped.
+The examples are real — copied from a run against `npm run dev` — with the identifiers swapped. **The timestamps in them are illustrative**: a NIP-98 event is only valid for 60 seconds around the moment it is signed, and `expiresAt` on a new coupon has to be in the future, so generate both rather than copying the literals.
 
 > **Error messages and example names are quoted verbatim in es-AR.** They are what the API actually returns; translating them here would make this document wrong about the wire.
 
@@ -87,7 +87,7 @@ Kind `27235` in `Authorization: Nostr <base64 of the event>`. Verified in this o
 ```jsonc
 {
   "kind": 27235,
-  "created_at": 1764630000,
+  "created_at": 1764630000,               // now — the window is 60 s wide
   "content": "",
   "tags": [
     ["u", "https://merchant.lacrypta.ar/api/coupons/mint"],
@@ -388,7 +388,7 @@ Creates a definition.
   "benefit": { "type": "percent", "percent": 20,
                "cap": { "amount": 5000, "currency": "ARS" } },  // required
   "maxUses": 100,                             // optional, null ⇒ unlimited
-  "expiresAt": 1764633600                     // optional, unix SECONDS, in the future
+  "expiresAt": 1764633600                     // optional, unix SECONDS, must be in the future
 }
 ```
 
@@ -562,6 +562,8 @@ curl "https://merchant.lacrypta.ar/api/coupons/claim?nonce=hcLPDzERvvHzS4Vn0OLbA
 | `400` | `Falta el cupón.` — no `nonce`, or a malformed one |
 | `404` | `Cupón inexistente.` |
 
+> **Nonce hygiene.** The nonce is a bearer credential and this endpoint takes it in the query string, so it lands wherever URLs land: access logs, browser history, proxies, `Referer`. That is a deliberate trade — a POS scanning a QR needs a plain GET it can issue from anything — and it is bounded by the nonce being single-use and by `POST claim` being the only thing that spends it. If you are proxying this endpoint, redact the query string in your logs; if you are a storefront reading `?coupon=`, strip it from the URL once applied.
+
 > **One deployment serves many shops**, and this endpoint answers for any nonce it knows — it has to, because a POS validating a code has no storefront context. If you are a storefront, **check `npub` against the merchant you are charging**; without that, somebody carries a 50%-off from one shop to another.
 
 ---
@@ -597,7 +599,9 @@ To be filed, the event must verify its signature, be `kind 9734`, carry a `coupo
 | `200` `success` | Just redeemed |
 | `200` `claimed` | Already redeemed, with the **original** `claimedAt` |
 
-**"Already redeemed" being `200` and not an error is deliberate:** a POS that lost our response retries, and by comparing `claimedAt` against its own clock it knows whether the redemption was its own. An error would collapse "I redeemed this" and "somebody beat me to it" into "the request failed".
+**"Already redeemed" being `200` and not an error is deliberate:** a POS that lost our response retries and still gets the coupon's terms and its `claimedAt` back, instead of an error that would collapse "I redeemed this" and "somebody beat me to it" into "the request failed".
+
+**`claimedAt` is a heuristic, not an idempotency key.** It has one-second resolution and it does not identify the caller, so a till comparing it against its own clock can tell "this was redeemed around when I asked" — enough to hand over the goods after a dropped response — but two tills scanning the same QR inside the same second cannot tell each other apart from it. If your POS needs a hard answer, keep your own record of which nonces you sent and reconcile against that; there is no server-side idempotency key today.
 
 | Error | When |
 |---|---|
@@ -725,9 +729,20 @@ The only cacheable route: `public, max-age=300`. The key is stable for the life 
 | `410` | Terminal: expired or archived | Do not retry |
 | `413` | Body over 16 KB | Not our use case |
 | `429` | Rate limit | Wait `retryAfter` seconds |
-| `503` | No database, no manager, or a database error | Retry with backoff |
+| `503` | No database, no manager, or a database error | Retry with backoff — but see below for the two creating endpoints |
 
 `404` for "belongs to somebody else" is deliberate: to a stranger probing UUIDs, "does not exist" and "not yours" have to look the same.
+
+### Retrying `POST /api/coupons` and `POST /api/coupons/mint`
+
+These two create durable rows, and **there is no idempotency key**. A NIP-98 event is single-use, so a retry is a genuinely new request: if the original committed and only its response was lost, retrying blindly leaves a duplicate definition, or a second nonce that counts against the cap and that nobody is holding.
+
+Reconcile instead of retrying:
+
+- **Create** — `GET /api/coupons` and look for the name you just sent.
+- **Mint** — `GET /api/coupons/{id}/mints` and check whether a nonce appeared in the last few seconds. A stray mint is not a disaster: `DELETE …/mints/{nonce}` voids it and gives the slot back.
+
+Everything else on this page is safe to retry: the reads have no effect, `PATCH` is idempotent by construction, and `POST claim` answers `claimed` with the original `claimedAt` on the second call.
 
 ---
 

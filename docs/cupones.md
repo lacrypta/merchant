@@ -53,11 +53,12 @@ SESSION_JWT_SECRET=…             # signs the session JWTs
 
 Without `DATABASE_URL` or without `COUPON_MANAGER_NSEC` the coupon endpoints answer `503` and the rest of the app works the same: **having no database is a supported state**.
 
-Three variables sign things and each fails differently, on purpose:
+Two of them are signing keys, and they fail differently on purpose:
 
-- **`COUPON_MANAGER_NSEC` has no fallback**: it signs published, long-lived artifacts — vouchers, the announcement — and a key that silently rotates invalidates them months later, with no warning. Its absence is a 503.
+- **`COUPON_MANAGER_NSEC` has no fallback.** It signs **vouchers** — long-lived artifacts that a POS verifies months later against the key the merchant named — so a key that silently rotates invalidates every one of them with no warning. Its absence is a 503. It does **not** sign the announcement: that one the merchant signs with their own key, and this service could not forge it (see [Nostr events](./cupones-nostr.md)).
 - **`SESSION_JWT_SECRET` does have a per-process random fallback**, like `LN_PROXY_SECRET`: the worst that happens is one extra signature. **But with more than one instance it must be set**, or a token minted by A is rejected by B and the client re-mints every other request — worse than having no session at all.
-- **`NEXT_PUBLIC_APP_URL`**, when set, is the **only** origin NIP-98 accepts, and the `x-forwarded-*` headers are ignored. See [API § NIP-98](./cupones-api.md#nip-98).
+
+`NEXT_PUBLIC_APP_URL` signs nothing; it configures **which origin NIP-98 validates against**. When set, it is the only one accepted and the `x-forwarded-*` headers are ignored. See [API § NIP-98](./cupones-api.md#nip-98).
 
 ### Migrations
 
@@ -68,7 +69,7 @@ npm run db:migrate    # by hand; the build already does it
 
 **Migrations run at build time**, not at runtime: `npm run build` executes `drizzle-kit migrate` before compiling if there is a `DATABASE_URL` (or `DATABASE_POOL_URL`), and fails the build if they do not apply. A runtime migrator would race across several instances; leaving it only to whoever deploys has already been tried and ends in a table that does not exist.
 
-If the provider hands out two URLs — a direct one and a pooler — the app and the migrations both use **the pooler**. The textbook move is migrating over the direct connection, but this runs inside the deploy: if the build cannot reach it, there is no migration.
+The build runs them when **either** `DATABASE_URL` or `DATABASE_POOL_URL` is set. If the provider hands out both, the app and the migrations use **the pooler**. The textbook move is migrating over the direct connection, but this runs inside the deploy: if the build cannot reach it, there is no migration.
 
 ---
 

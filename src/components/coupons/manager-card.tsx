@@ -166,15 +166,32 @@ function Body({ state }: { state: CouponServiceState }) {
         </p>
       )
 
+    /**
+     * Two different ways to be outdated, and naming the wrong one sends the
+     * merchant to check a URL that is fine. A different manager key means
+     * another service signs their vouchers — this one would answer "cupón
+     * inexistente" for every code — so that is what the sentence says.
+     */
     case "outdated":
       return (
         <p className="flex items-start gap-1.5 text-sm text-warning">
           <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>
-            Tu anuncio apunta a{" "}
-            <span className="truncate-middle numeric">{state.published.mintUrl}</span>, no
-            a este servidor. Reactivalo acá para que los emita este.
-          </span>
+          {state.published.managerPubkey === state.desired.managerPubkey ? (
+            <span>
+              Tu anuncio apunta a{" "}
+              <span className="truncate-middle numeric">{state.published.mintUrl}</span>, no
+              a este servidor. Reactivalo acá para que los emita este.
+            </span>
+          ) : (
+            <span>
+              Tu anuncio nombra a otro servicio de cupones (
+              <span className="truncate-middle numeric">
+                {safeNpub(state.published.managerPubkey)}
+              </span>
+              ), así que tus cupones no se emiten ni se canjean acá. Reactivalo para que
+              los maneje este servidor.
+            </span>
+          )}
         </p>
       )
 

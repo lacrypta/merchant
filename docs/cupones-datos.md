@@ -34,7 +34,7 @@ What the merchant authored: a coupon that can be minted N times.
 
 One row, as `psql` reads it:
 
-```
+```text
 id            | 55b5ee4f-4dcc-4a6a-a58e-6d1d94d811a3
 owner_pubkey  | 2ad91f1dca2dcd5fc89e7208d1e5059f0bac0870d63fc3bac21c7a9388fa18fd
 name          | 20% de verano

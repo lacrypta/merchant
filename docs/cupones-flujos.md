@@ -6,17 +6,18 @@ How it all chains together, end to end, and which decisions not to revert withou
 
 ## 1. Activating the service
 
-```
+```text
 Merchant               This app                    Database        Relays
     │                     │                          │               │
     │ "Activar servicio"  │                          │               │
     ├────────────────────►│ GET /api/coupons/manager │               │
     │                     │◄─── managerPubkey ───────┤               │
     │  signs the 30078    │                          │               │
+    │  (p tag = manager)  │                          │               │
     │◄────────────────────┤                          │               │
     ├────────────────────►│ PUT /discovery ─────────►│ stores        │
     │                     ├─────────── publishes ────────────────────►│
-```
+```text
 
 It is stored **the moment it is signed**, before the relays answer: losing that copy because a relay was slow is the bug this mechanism exists to fix.
 
@@ -36,7 +37,7 @@ POS                        Relays              This service
  ├─────────────────────────────────────────────────►│
  │◄── coupon, name, npub, nonce, voucher ───────────┤
  │                                                  │
- │  checks voucher.pubkey === managerPubkey         │
+ │  checks voucher.pubkey === the `p` tag           │
  │  shows the QR with the nonce                     │
  │                                                  │
  │  POST claimUrl { nonce }                         │
@@ -52,7 +53,7 @@ The POS needs to know nothing about us beforehand: the announcement tells it whe
 
 The checkout does not need the announcement: it calls its own endpoints.
 
-1. The shopper pastes the nonce in the cart (or arrives with `?coupon=<nonce>`).
+1. The shopper pastes the nonce in the cart (or arrives with `?coupon=<nonce>` from a minted QR — see the nonce-hygiene note in [API](./cupones-api.md#get-apicouponsclaimnonce)).
 2. **`GET claim`** validates without consuming. It is checked that the coupon belongs to **this shop** — one deployment serves many merchants and the endpoint answers for any nonce it knows; without that check somebody could carry a 50%-off from one shop to another.
 3. The discount is shown in the total. Nothing has been consumed yet.
 4. On tapping **"Generar factura"**, the zap request is signed (locally, no network) and **`POST claim`** consumes the coupon *before* asking for the invoice, carrying the signed order with it. If somebody else used it in between, the shopper is told and it comes off the cart.
@@ -84,7 +85,7 @@ The third is not listed in `/admin/orders`: it belongs to the receipt that will 
 
 - **`GET` validates and `POST` consumes.** If applying a coupon redeemed it, whoever pastes a code and closes the tab has lost it.
 - **The redemption happens BEFORE asking for the invoice.** The other way round, two tills could honour the same nonce; this way the worst case is a burned coupon the merchant re-issues in two taps.
-- **"Already redeemed" is `200`, not an error.** A POS that lost the response retries, and by comparing `claimedAt` against its own clock it knows whether the redemption was its own.
+- **"Already redeemed" is `200`, not an error.** A POS that lost the response retries and still gets the terms and the original `claimedAt` back. That timestamp is a heuristic, not an idempotency key — it has one-second resolution and names no caller — so a till that needs certainty keeps its own record of the nonces it sent.
 - **An invalid `zapRequest` does not cancel the redemption.** What is lost is the record, not the customer's coupon.
 
 **About what a coupon promises**
