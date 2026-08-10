@@ -524,7 +524,9 @@ Its own endpoint rather than a field on `GET /api/coupons`: that response is wha
 | `410` | `El cupón fue archivado.` / `El cupón está vencido.` |
 | `503` | No database, no manager, or the definition does not parse |
 
-**The nonce is 16 random bytes in base64url (22 characters):** unguessable and it fits in any QR. **It is a bearer token** — whoever holds it can redeem. It exists only in this response and in the database, it is never logged, and the response is never cached.
+**The nonce is 16 random bytes in base64url (22 characters):** unguessable and it fits in any QR. **It is a bearer token** — whoever holds it can redeem.
+
+Minting keeps it narrow: it is in this response body and in the database, this route never logs it, and the response is never cached. **That containment ends the moment it is redeemed** — `GET /api/coupons/claim` takes it in the query string, where URLs get logged, kept in history and forwarded as a `Referer`. See [the nonce-hygiene note](#get-apicouponsclaimnonce).
 
 The mint cap holds via the `UPDATE … WHERE minted_count < max_uses` that increments the counter. Counting rows in `coupon_mints` would be a race.
 
