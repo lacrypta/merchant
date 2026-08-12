@@ -56,6 +56,15 @@ export default function LandingPage() {
           <p className="mt-10 text-center text-sm text-muted-foreground">
             Hecho por{" "}
             <Link
+              href="https://github.com/agustinkassis"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              El Gorila
+            </Link>
+            {" - Powered by "}
+            <Link
               href="https://lacrypta.ar"
               target="_blank"
               rel="noreferrer noopener"

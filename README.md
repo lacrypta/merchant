@@ -2,7 +2,7 @@
 
 Panel para que un comercio administre su catálogo y lo publique en **nostr**, firmado con su propia clave. Cualquier punto de venta lo lee en vivo.
 
-Hecho por [La Crypta](https://lacrypta.ar).
+Hecho por [El Gorila](https://github.com/agustinkassis) - Powered by [La Crypta](https://lacrypta.ar).
 
 ## El problema que resuelve
 
