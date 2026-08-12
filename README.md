@@ -2,7 +2,7 @@
 
 A dashboard for a merchant to manage their catalog and publish it on **nostr**, signed with their own key. Any point of sale reads it live.
 
-Built by [La Crypta](https://lacrypta.ar).
+Built by [El Gorila](https://github.com/agustinkassis) - Powered by [La Crypta](https://lacrypta.ar).
 
 ## The problem it solves
 
