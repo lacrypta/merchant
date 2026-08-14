@@ -12,7 +12,11 @@ import {
   ResponsiveDialogHeader,
   ResponsiveDialogTitle,
 } from "@/components/ui/responsive-dialog"
-import { publishEventStreaming, type RelayProgress } from "@/lib/nostr/backend"
+import { publishEvent, publishEventStreaming, type RelayProgress } from "@/lib/nostr/backend"
+import {
+  isRelayRateLimit,
+  nextPaceMs,
+} from "@/lib/nostr/relay-sync"
 import type { EventTemplate, PublishReport, SignedEvent } from "@/lib/nostr/types"
 import { cn } from "@/lib/utils"
 
@@ -27,6 +31,8 @@ export interface PublishJob {
   progress: RelayProgress[]
   error?: string
   queuedAt: number
+  /** Catalog replay: event N of M, rather than per-relay of a single publish. */
+  batch?: { done: number; total: number; failed: number }
 }
 
 export interface EnqueueOptions {
@@ -38,18 +44,174 @@ export interface EnqueueOptions {
   onSettled?: (report: PublishReport | null) => void
 }
 
+export interface BatchItem {
+  event: SignedEvent
+  relays: string[]
+  label: string
+}
+
+export interface BatchEnqueueOptions {
+  label: string
+  items: BatchItem[]
+  paceMs: number
+  onSettled?: (summary: {
+    ok: number
+    failed: number
+    cancelled: boolean
+  }) => void
+}
+
 interface PublishMonitorContextValue {
   jobs: PublishJob[]
   /** Fire-and-forget. Returns immediately; the queue does the waiting. */
   enqueue: (opts: EnqueueOptions) => string
+  /** One job that republishes many already-signed events, paced. */
+  enqueueBatch: (opts: BatchEnqueueOptions) => string
+  /** Stop a queued or in-flight batch. Single publishes run to completion. */
+  cancel: (id: string) => void
   activeCount: number
   clear: () => void
 }
+
+type SingleQueued = EnqueueOptions & { id: string; kind: "single" }
+type BatchQueued = BatchEnqueueOptions & { id: string; kind: "batch" }
+type Queued = SingleQueued | BatchQueued
 
 const PublishMonitorContext =
   React.createContext<PublishMonitorContextValue | null>(null)
 
 let jobCounter = 0
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Sleep in small slices so Cancelar does not wait out a 15s backoff. */
+async function waitUnlessCancelled(
+  ms: number,
+  cancelled: Set<string>,
+  id: string
+): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (cancelled.has(id)) return false
+    await wait(Math.min(100, deadline - Date.now()))
+  }
+  return !cancelled.has(id)
+}
+
+async function runBatch(
+  job: BatchQueued,
+  patch: (id: string, next: Partial<PublishJob>) => void,
+  cancelled: Set<string>
+): Promise<void> {
+  if (cancelled.has(job.id)) {
+    patch(job.id, {
+      phase: "failed",
+      error: "Cancelado",
+      batch: { done: 0, total: job.items.length, failed: 0 },
+    })
+    job.onSettled?.({ ok: 0, failed: 0, cancelled: true })
+    return
+  }
+
+  const total = job.items.length
+  patch(job.id, {
+    phase: "publishing",
+    batch: { done: 0, total, failed: 0 },
+  })
+
+  let pace = job.paceMs
+  let ok = 0
+  let failed = 0
+
+  for (let i = 0; i < job.items.length; i++) {
+    if (cancelled.has(job.id)) {
+      patch(job.id, {
+        phase: "failed",
+        error: "Cancelado",
+        batch: { done: i, total, failed },
+      })
+      job.onSettled?.({ ok, failed, cancelled: true })
+      return
+    }
+
+    if (i > 0 && !(await waitUnlessCancelled(pace, cancelled, job.id))) {
+      patch(job.id, {
+        phase: "failed",
+        error: "Cancelado",
+        batch: { done: i, total, failed },
+      })
+      job.onSettled?.({ ok, failed, cancelled: true })
+      return
+    }
+
+    const item = job.items[i]!
+    patch(job.id, {
+      label: `${job.label} · ${item.label}`,
+      event: item.event,
+      batch: { done: i, total, failed },
+    })
+
+    const report = await publishEvent(item.event, item.relays)
+    if (cancelled.has(job.id)) {
+      patch(job.id, {
+        phase: "failed",
+        error: "Cancelado",
+        batch: { done: i, total, failed },
+      })
+      job.onSettled?.({ ok, failed, cancelled: true })
+      return
+    }
+
+    const progress: RelayProgress[] = [
+      ...report.ok.map((relay) => ({ relay, state: "ok" as const })),
+      ...report.failed.map((f) => ({
+        relay: f.relay,
+        state: "failed" as const,
+        reason: f.reason,
+      })),
+    ]
+    const landed = report.ok.length > 0
+    if (landed) ok += 1
+    else failed += 1
+
+    pace = nextPaceMs(
+      pace,
+      report.failed.some((f) => isRelayRateLimit(f.reason))
+    )
+
+    patch(job.id, {
+      progress,
+      batch: { done: i + 1, total, failed },
+    })
+  }
+
+  if (cancelled.has(job.id)) {
+    patch(job.id, { phase: "failed", error: "Cancelado", batch: { done: total, total, failed } })
+    job.onSettled?.({ ok, failed, cancelled: true })
+    return
+  }
+
+  const allFailed = ok === 0
+  patch(job.id, {
+    phase: allFailed ? "failed" : "done",
+    error: allFailed ? job.items[0] ? "Ningún relay aceptó los eventos." : undefined : undefined,
+    batch: { done: total, total, failed },
+  })
+
+  if (allFailed) {
+    toast.error(`No se pudo sincronizar «${job.label}»`, {
+      description: "Ningún relay aceptó los eventos.",
+    })
+  } else if (failed > 0) {
+    toast.error("Sincronización incompleta", {
+      description: `${failed} ${failed === 1 ? "evento no llegó" : "eventos no llegaron"} a ningún relay.`,
+    })
+  }
+
+  job.onSettled?.({ ok, failed, cancelled: false })
+}
 
 /**
  * Background publish queue.
@@ -75,8 +237,9 @@ export function PublishMonitorProvider({
 
   // The pending work lives in a ref, not state: the drain loop must see the
   // current queue without being restarted by every render.
-  const queueRef = React.useRef<(EnqueueOptions & { id: string })[]>([])
+  const queueRef = React.useRef<Queued[]>([])
   const drainingRef = React.useRef(false)
+  const cancelledRef = React.useRef(new Set<string>())
 
   const patch = React.useCallback((id: string, next: Partial<PublishJob>) => {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...next } : j)))
@@ -90,6 +253,11 @@ export function PublishMonitorProvider({
       for (;;) {
         const job = queueRef.current.shift()
         if (!job) break
+
+        if (job.kind === "batch") {
+          await runBatch(job, patch, cancelledRef.current)
+          continue
+        }
 
         patch(job.id, { phase: "signing" })
 
@@ -146,11 +314,48 @@ export function PublishMonitorProvider({
           queuedAt: Date.now(),
         },
       ])
-      queueRef.current.push({ ...opts, id })
+      queueRef.current.push({ ...opts, id, kind: "single" })
       void drain()
       return id
     },
     [drain]
+  )
+
+  const enqueueBatch = React.useCallback(
+    (opts: BatchEnqueueOptions) => {
+      const id = `job-${++jobCounter}`
+      setJobs((prev) => [
+        ...prev,
+        {
+          id,
+          label: opts.label,
+          phase: "queued",
+          event: null,
+          progress: [],
+          queuedAt: Date.now(),
+          batch: { done: 0, total: opts.items.length, failed: 0 },
+        },
+      ])
+      queueRef.current.push({ ...opts, id, kind: "batch" })
+      void drain()
+      return id
+    },
+    [drain]
+  )
+
+  const cancel = React.useCallback(
+    (id: string) => {
+      cancelledRef.current.add(id)
+      queueRef.current = queueRef.current.filter((j) => j.id !== id)
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === id && (j.phase === "queued" || j.phase === "publishing")
+            ? { ...j, phase: "failed", error: "Cancelado" }
+            : j
+        )
+      )
+    },
+    []
   )
 
   const clear = React.useCallback(() => {
@@ -163,8 +368,8 @@ export function PublishMonitorProvider({
   ).length
 
   const value = React.useMemo(
-    () => ({ jobs, enqueue, activeCount, clear }),
-    [jobs, enqueue, activeCount, clear]
+    () => ({ jobs, enqueue, enqueueBatch, cancel, activeCount, clear }),
+    [jobs, enqueue, enqueueBatch, cancel, activeCount, clear]
   )
 
   return (
@@ -256,10 +461,33 @@ function ProgressRing({
 }
 
 function summarise(job: PublishJob) {
+  if (job.batch) {
+    const { done, total, failed } = job.batch
+    return { total, ok: Math.max(0, done - failed), failed, settled: done }
+  }
   const total = job.progress.length
   const ok = job.progress.filter((p) => p.state === "ok").length
   const failed = job.progress.filter((p) => p.state === "failed").length
   return { total, ok, failed, settled: ok + failed }
+}
+
+function headlineFor(job: PublishJob, stats: ReturnType<typeof summarise>): string {
+  if (job.error === "Cancelado") return "Sincronización cancelada"
+  if (job.batch) {
+    if (job.phase === "queued") return "En cola…"
+    if (job.phase === "publishing")
+      return `Sincronizando ${stats.settled}/${stats.total}…`
+    if (job.phase === "failed") return "Sincronización incompleta"
+    return stats.failed > 0
+      ? `Sincronizado ${stats.ok} de ${stats.total}`
+      : `Sincronizado ${stats.total} eventos`
+  }
+  if (job.phase === "queued") return "En cola…"
+  if (job.phase === "signing") return "Esperando tu firma…"
+  if (job.phase === "publishing")
+    return `Publicando en ${stats.settled}/${stats.total} relays…`
+  if (job.phase === "failed") return "No se pudo publicar"
+  return `Publicado en ${stats.ok} de ${stats.total} relays`
 }
 
 function PublishMonitorWidget() {
@@ -280,16 +508,11 @@ function PublishMonitorWidget() {
 
   if (!latest) return null
 
-  const { total, ok, failed, settled } = summarise(latest)
+  const stats = summarise(latest)
   const busy = activeCount > 0
-
-  let headline: string
-  if (latest.phase === "queued") headline = "En cola…"
-  else if (latest.phase === "signing") headline = "Esperando tu firma…"
-  else if (latest.phase === "publishing")
-    headline = `Publicando en ${settled}/${total} relays…`
-  else if (latest.phase === "failed") headline = "No se pudo publicar"
-  else headline = `Publicado en ${ok} de ${total} relays`
+  const headline = headlineFor(latest, stats)
+  const ringIndeterminate =
+    latest.phase === "queued" || latest.phase === "signing"
 
   return (
     <>
@@ -308,12 +531,10 @@ function PublishMonitorWidget() {
           )}
         >
           <ProgressRing
-            done={settled}
-            total={total}
-            failed={failed}
-            indeterminate={
-              latest.phase === "queued" || latest.phase === "signing"
-            }
+            done={stats.settled}
+            total={stats.total}
+            failed={stats.failed}
+            indeterminate={ringIndeterminate}
           />
 
           <span className="min-w-0">
@@ -345,7 +566,7 @@ function PublishDetailDialog({
   onOpenChange: (o: boolean) => void
   jobs: PublishJob[]
 }) {
-  const { clear } = usePublishMonitor()
+  const { clear, cancel } = usePublishMonitor()
 
   return (
     <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
@@ -360,6 +581,9 @@ function PublishDetailDialog({
         <div className="space-y-8">
           {[...jobs].reverse().map((job) => {
             const { total, ok, failed, settled } = summarise(job)
+            const canCancel =
+              !!job.batch &&
+              (job.phase === "queued" || job.phase === "publishing")
             return (
               <section key={job.id} className="space-y-4">
                 <header className="flex items-center gap-3">
@@ -379,8 +603,12 @@ function PublishDetailDialog({
                         ? "En cola"
                         : job.phase === "signing"
                           ? "Esperando firma"
-                          : `${ok} aceptaron · ${failed} fallaron`}
-                      {job.event ? (
+                          : job.error === "Cancelado"
+                            ? "Cancelado"
+                            : job.batch
+                              ? `${ok} ok · ${failed} fallaron · ${settled}/${total}`
+                              : `${ok} aceptaron · ${failed} fallaron`}
+                      {job.event && !job.batch ? (
                         <>
                           <span aria-hidden> · </span>kind {job.event.kind}
                         </>
@@ -389,6 +617,15 @@ function PublishDetailDialog({
                   </div>
                   {job.phase === "queued" ? (
                     <Clock className="size-4 text-muted-foreground" aria-hidden />
+                  ) : null}
+                  {canCancel ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => cancel(job.id)}
+                    >
+                      Cancelar
+                    </Button>
                   ) : null}
                 </header>
 

@@ -168,10 +168,6 @@ export function publishEventStreaming(
 }
 
 /**
- * One-shot load. `request()` completes on its own once relays are done and
- * de-duplicates across them, so no manual EOSE bookkeeping is needed.
- */
-/**
  * One-shot read across relays, one subscription per relay.
  *
  * Per-relay rather than one combined request for two reasons. First, the
@@ -189,19 +185,19 @@ export function publishEventStreaming(
  * Switching to EMPTY rather than throwing completes the stream, so `toArray`
  * still emits everything collected up to that point.
  */
-export async function queryEvents(
+async function queryEachRelay(
   filters: Filter[],
   relays: string[],
   opts: { timeoutMs?: number; settleMs?: number; label?: string } = {}
-): Promise<SignedEvent[]> {
-  if (relays.length === 0 || filters.length === 0) return []
+): Promise<{ url: string; events: SignedEvent[] }[]> {
+  if (relays.length === 0 || filters.length === 0) {
+    return relays.map((url) => ({ url, events: [] }))
+  }
   const pool = ensureNostrGlobals()
   const label = opts.label ?? "Consulta"
-  // One place to honour the relay toggles, so every caller gets it for free.
-  const active = enabledRelays(relays)
 
-  const results = await Promise.all(
-    active.map(async (url) => {
+  return Promise.all(
+    relays.map(async (url) => {
       const startedAt = Date.now()
       const perRelay: SignedEvent[] = []
 
@@ -235,18 +231,52 @@ export async function queryEvents(
         origin: "client",
       })
 
-      return perRelay
+      return { url, events: perRelay }
     })
   )
+}
+
+export async function queryEvents(
+  filters: Filter[],
+  relays: string[],
+  opts: { timeoutMs?: number; settleMs?: number; label?: string } = {}
+): Promise<SignedEvent[]> {
+  if (relays.length === 0 || filters.length === 0) return []
+  // One place to honour the relay toggles, so every caller gets it for free.
+  const active = enabledRelays(relays)
+  const results = await queryEachRelay(filters, active, opts)
 
   // Cross-relay de-duplication. The per-relay counts in the log are
   // deliberately the RAW totals — that is the point of the panel: seeing that
   // four relays each carried the same twelve events is the interesting part.
   const byId = new Map<string, SignedEvent>()
-  for (const list of results) {
-    for (const e of list) byId.set(e.id, e)
+  for (const { events } of results) {
+    for (const e of events) byId.set(e.id, e)
   }
   return [...byId.values()]
+}
+
+/**
+ * One-shot read that keeps the per-relay lists apart.
+ *
+ * Gap-fill has to know which relay is missing an event, and the merged
+ * `queryEvents` answer cannot say that. Does NOT apply the read-toggle filter:
+ * the caller already picked the write relays, and a write-only entry still
+ * has to be asked whether it holds the catalog. Unreachable relays land in
+ * the map with an empty list, so a planner can treat them as missing.
+ */
+export async function queryEventsByRelay(
+  filters: Filter[],
+  relays: string[],
+  opts: { timeoutMs?: number; settleMs?: number; label?: string } = {}
+): Promise<Map<string, SignedEvent[]>> {
+  const out = new Map<string, SignedEvent[]>()
+  for (const url of relays) out.set(url, [])
+  if (relays.length === 0 || filters.length === 0) return out
+
+  const results = await queryEachRelay(filters, relays, opts)
+  for (const { url, events } of results) out.set(url, events)
+  return out
 }
 
 /** Live subscription. Never completes; call the returned function to stop. */

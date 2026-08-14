@@ -28,6 +28,7 @@ export {
   publishEvent,
   publishEventStreaming,
   queryEvents,
+  queryEventsByRelay,
   subscribeEvents,
   relayStatuses,
 } from "@/lib/nostr/adapters/applesauce/relays"

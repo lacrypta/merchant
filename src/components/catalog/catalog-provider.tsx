@@ -2,6 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import * as React from "react"
+import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth/auth-provider"
 import { usePublishMonitor } from "@/components/publish/publish-monitor"
@@ -16,14 +17,11 @@ import {
   type CatalogDiff,
   type CatalogSnapshot,
 } from "@/lib/domain/catalog-diff"
-import { COUPON_DISCOVERY_D } from "@/lib/domain/coupon-discovery"
 import { KINDS } from "@/lib/domain/kinds"
 import {
-  WOO_CONFIG_D,
   buildAppDataEvent,
   isOurWooConfig,
 } from "@/lib/domain/woo-config"
-import { WOO_SYNC_D } from "@/lib/domain/woo-sync-state"
 import {
   buildProductEvent,
   parseProductEvent,
@@ -37,7 +35,7 @@ import {
   type RelayEntry,
 } from "@/lib/domain/relay-list"
 import { nextCreatedAt, nowSeconds } from "@/lib/nostr/created-at"
-import { queryEvents } from "@/lib/nostr/backend"
+import { queryEvents, queryEventsByRelay } from "@/lib/nostr/backend"
 import { CACHE, qk } from "@/lib/query/keys"
 import {
   readRelayEntries,
@@ -45,6 +43,14 @@ import {
   writeRelayEntries,
 } from "@/lib/nostr/relay-prefs"
 import { DEFAULT_RELAYS, dedupeRelays } from "@/lib/nostr/relays"
+import {
+  BASE_PACE_MS,
+  catalogSyncFilters,
+  collectCanonicalEvents,
+  planReplay,
+  replayLabel,
+  upsertCanonical,
+} from "@/lib/nostr/relay-sync"
 import { coordinate, coordinateOf, tagValue } from "@/lib/nostr/tags"
 import type { EventTemplate, SignedEvent } from "@/lib/nostr/types"
 
@@ -108,6 +114,13 @@ interface CatalogContextValue {
    * call path that builds it is the one that encrypts.
    */
   publishAppData: (d: string, ciphertext: string, label: string) => void
+  /**
+   * Rebroadcast every already-signed catalog event onto write relays that are
+   * missing it. No new signature. `relays` defaults to the current write set.
+   */
+  syncCatalog: (opts?: { relays?: string[]; silent?: boolean }) => void
+  /** True while a presence check or replay batch is in flight. */
+  replaying: boolean
 }
 
 const CatalogContext = React.createContext<CatalogContextValue | null>(null)
@@ -116,6 +129,7 @@ const EMPTY_SNAPSHOT: CatalogSnapshot = { products: [], categories: [] }
 /** Stable reference: a fresh [] each render would re-run every consumer memo. */
 const EMPTY_APP_DATA: SignedEvent[] = []
 const EMPTY_LEGACY_DRAFTS: LegacyDraft[] = []
+const EMPTY_CANONICAL: SignedEvent[] = []
 
 /** The bare minimum needed to address and label a stale 30403 for deletion. */
 export interface LegacyDraft {
@@ -191,6 +205,11 @@ interface CatalogRead {
    * this function does not have.
    */
   appData: SignedEvent[]
+  /**
+   * Already-signed events that every write relay should hold. Used by replay,
+   * not by the board — the board reads the parsed snapshot.
+   */
+  canonical: SignedEvent[]
 }
 
 /**
@@ -206,31 +225,7 @@ async function readCatalog(
   readUrls: string[]
 ): Promise<CatalogRead> {
   const events = await queryEvents(
-    [
-      {
-        // 30403 is still read even though nothing writes drafts any more: the
-        // sweep below is the only thing that can find a leftover from before
-        // the feature was removed, and without this kind it never sees one.
-        kinds: [KINDS.PRODUCT, KINDS.PRODUCT_DRAFT, KINDS.CATEGORY],
-        authors: [pubkey],
-      },
-      { kinds: [KINDS.DELETION], authors: [pubkey] },
-      { kinds: [KINDS.RELAY_LIST], authors: [pubkey] },
-      {
-        kinds: [KINDS.APP_DATA],
-        authors: [pubkey],
-        // Scoped to OUR `d` tags: kind 30078 is shared by every app that
-        // stores per-user data, and pulling all of them would drag down
-        // unrelated blobs on every catalog load.
-        //
-        // The coupon announcement is in here because it is the one 30078 that
-        // somebody else reads: what the relays hold IS what a third-party POS
-        // sees, so the coupons card has to compare its stored copy against it
-        // and win by created_at. Without this `d` that comparison ran against
-        // nothing.
-        "#d": [WOO_CONFIG_D, WOO_SYNC_D, COUPON_DISCOVERY_D],
-      },
-    ],
+    catalogSyncFilters(pubkey),
     readUrls,
     { label: "Catálogo, borrados, relays y config" }
   )
@@ -276,12 +271,13 @@ async function readCatalog(
     legacyDrafts: legacyDrafts.filter((ld) => ld.d),
     relayList: relayEvent ? parseRelayListEvent(relayEvent) : null,
     appData: latestByAddress(live.filter((e) => e.kind === KINDS.APP_DATA)),
+    canonical: collectCanonicalEvents(events),
   }
 }
 
 export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const { state, signer } = useAuth()
-  const { enqueue } = usePublishMonitor()
+  const { enqueue, enqueueBatch } = usePublishMonitor()
   const queryClient = useQueryClient()
   const pubkey = state.status === "ready" ? state.pubkey : null
 
@@ -365,11 +361,16 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   )
   // `?? EMPTY` also covers caches persisted before the field existed.
   const legacyDrafts = catalogQuery.data?.legacyDrafts ?? EMPTY_LEGACY_DRAFTS
+  const canonical = catalogQuery.data?.canonical ?? EMPTY_CANONICAL
 
   const publishedRef = React.useRef(published)
+  const canonicalRef = React.useRef(canonical)
   React.useEffect(() => {
     publishedRef.current = published
   }, [published])
+  React.useEffect(() => {
+    canonicalRef.current = canonical
+  }, [canonical])
 
   const changes = React.useMemo(
     () => (pubkey ? diffCatalog(published, draft, pubkey) : EMPTY_DIFF),
@@ -393,6 +394,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
           appData: old?.appData ?? EMPTY_APP_DATA,
           legacyDrafts: old?.legacyDrafts ?? EMPTY_LEGACY_DRAFTS,
           snapshot: old?.snapshot ?? EMPTY_SNAPSHOT,
+          canonical: old?.canonical ?? EMPTY_CANONICAL,
         })
       )
     },
@@ -577,12 +579,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         relays: writeRelays(relayEntriesRef.current),
         onSettled: (report) => {
           if (opts.trackId) markPending(opts.trackId, false)
-          if (report && report.ok.length > 0) opts.advance?.()
+          if (report && report.ok.length > 0) {
+            opts.advance?.()
+            advanceRead((prev) => ({
+              ...prev,
+              canonical: upsertCanonical(prev.canonical, report.event),
+            }))
+          }
           scheduleReconcile()
         },
       })
     },
-    [signer, enqueue, markPending, scheduleReconcile]
+    [signer, enqueue, markPending, scheduleReconcile, advanceRead]
   )
 
   const saveChanges = React.useCallback(() => {
@@ -818,6 +826,129 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     )
   }, [pubkey, publish])
 
+  const [replaying, setReplaying] = React.useState(false)
+  const replayingRef = React.useRef(false)
+  const writeBaselineRef = React.useRef<Set<string> | null>(null)
+  const pendingReplayRef = React.useRef<string[]>([])
+
+  const syncCatalog = React.useCallback(
+    (opts: { relays?: string[]; silent?: boolean } = {}) => {
+      if (!pubkey) return
+      const relays = opts.relays ?? writeRelays(relayEntriesRef.current)
+      const events = canonicalRef.current
+      const silent = opts.silent ?? false
+
+      if (relays.length === 0) {
+        if (!silent) toast.error("Sin relays de escritura")
+        return
+      }
+      if (events.length === 0) {
+        if (!silent) {
+          toast.message("Nada publicado todavía", {
+            description: "Publicá productos o categorías y después sincronizá.",
+          })
+        }
+        return
+      }
+      if (replayingRef.current) return
+      replayingRef.current = true
+      setReplaying(true)
+
+      void (async () => {
+        let enqueued = false
+        try {
+          const holdings = await queryEventsByRelay(
+            catalogSyncFilters(pubkey),
+            relays,
+            { label: "Presencia del catálogo", timeoutMs: 5_000 }
+          )
+          for (const url of relays) {
+            if (!holdings.has(url)) holdings.set(url, [])
+          }
+          const plan = planReplay(events, holdings)
+          if (plan.length === 0) {
+            if (!silent) toast.success("Ya está en todos los relays")
+            return
+          }
+          enqueueBatch({
+            label:
+              opts.relays?.length === 1
+                ? `Sincronizar ${opts.relays[0]}`
+                : "Sincronizando catálogo",
+            items: plan.map((p) => ({
+              event: p.event,
+              relays: p.relays,
+              label: replayLabel(p.event),
+            })),
+            paceMs: BASE_PACE_MS,
+            onSettled: () => {
+              replayingRef.current = false
+              setReplaying(false)
+              scheduleReconcile()
+            },
+          })
+          enqueued = true
+        } catch (e) {
+          if (!silent) {
+            toast.error("No se pudo consultar los relays", {
+              description: e instanceof Error ? e.message : undefined,
+            })
+          }
+        } finally {
+          if (!enqueued) {
+            replayingRef.current = false
+            setReplaying(false)
+          }
+        }
+      })()
+    },
+    [pubkey, enqueueBatch, scheduleReconcile]
+  )
+
+  /**
+   * When the write set grows, fill the new relays with history.
+   *
+   * First snapshot after the catalog is ready is the baseline — that is a
+   * page load, not an add, and must not fan the whole catalog out. Relays
+   * added later (or switched to Escribir) are the ones that get a replay.
+   */
+  React.useEffect(() => {
+    if (!catalogQuery.data || !pubkey) return
+    const writes = writeRelays(relayEntries)
+    if (writeBaselineRef.current === null) {
+      writeBaselineRef.current = new Set(writes)
+      return
+    }
+    const added = writes.filter((u) => !writeBaselineRef.current!.has(u))
+    for (const u of writes) writeBaselineRef.current.add(u)
+    if (added.length === 0) return
+    if (saving || replaying) {
+      pendingReplayRef.current = [
+        ...new Set([...pendingReplayRef.current, ...added]),
+      ]
+      return
+    }
+    // Deferred: syncCatalog sets state, and a synchronous setState in an
+    // effect body cascades a render.
+    const timer = setTimeout(
+      () => syncCatalog({ relays: added, silent: true }),
+      0
+    )
+    return () => clearTimeout(timer)
+  }, [relayEntries, catalogQuery.data, pubkey, saving, replaying, syncCatalog])
+
+  React.useEffect(() => {
+    if (saving || replaying) return
+    if (pendingReplayRef.current.length === 0) return
+    const targets = pendingReplayRef.current
+    pendingReplayRef.current = []
+    const timer = setTimeout(
+      () => syncCatalog({ relays: targets, silent: true }),
+      0
+    )
+    return () => clearTimeout(timer)
+  }, [saving, replaying, syncCatalog])
+
   const value = React.useMemo<CatalogContextValue>(
     () => ({
       loading,
@@ -838,6 +969,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      syncCatalog,
+      replaying,
       legacyDrafts,
       sweepLegacyDrafts,
       appData,
@@ -861,6 +994,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       discardChanges,
       setRelayEntries,
       publishRelayList,
+      syncCatalog,
+      replaying,
       legacyDrafts,
       sweepLegacyDrafts,
       appData,
