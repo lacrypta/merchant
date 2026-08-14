@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Plus, RotateCcw, Trash2, Upload } from "lucide-react"
+import { Plus, RefreshCw, RotateCcw, Trash2, Upload } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
 import { PageHeader } from "@/components/shell/page-header"
@@ -27,8 +27,15 @@ const SOURCE_LABEL: Record<RelayEntry["source"], string> = {
 }
 
 export function RelaySettings() {
-  const { relayEntries, setRelayEntries, publishRelayList, loading } =
-    useCatalog()
+  const {
+    relayEntries,
+    setRelayEntries,
+    publishRelayList,
+    loading,
+    syncCatalog,
+    replaying,
+    saving,
+  } = useCatalog()
   const [draft, setDraft] = React.useState("")
   const [error, setError] = React.useState<string | null>(null)
   const [status, setStatus] = React.useState<Record<string, boolean>>({})
@@ -237,6 +244,18 @@ export function RelaySettings() {
         </Button>
 
         <Button
+          variant="outline"
+          disabled={loading || replaying || saving || writeCount === 0}
+          onClick={() => syncCatalog()}
+        >
+          <RefreshCw
+            className={`size-4 ${replaying ? "motion-safe:animate-spin" : ""}`}
+            aria-hidden
+          />
+          Sincronizar
+        </Button>
+
+        <Button
           variant="ghost"
           onClick={() =>
             setRelayEntries(
@@ -263,6 +282,12 @@ export function RelaySettings() {
         Publicar tu lista hace que otros clientes sepan dónde encontrarte. Si
         sacás <code>relay.lacrypta.ar</code>, puede que el POS de La Crypta deje
         de ver tu catálogo.
+      </p>
+      <p className="mt-2 max-w-prose text-xs text-muted-foreground">
+        <b className="text-foreground">Sincronizar</b> reenvía productos,
+        categorías y el anuncio de cupones a cada relay de escritura que no los
+        tenga. Va despacio a propósito, para que los relays no te bloqueen la
+        clave. Al agregar un relay de escritura, esa copia se hace sola.
       </p>
 
       <div className="mt-6">

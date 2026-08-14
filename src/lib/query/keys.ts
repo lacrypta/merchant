@@ -16,7 +16,7 @@ export const qk = {
   nip05: (address: string, pubkey: string) => ["nip05", address, pubkey] as const,
 
   /** The merchant's own catalog, as published on relays. */
-  catalog: (pubkey: string) => ["catalog", pubkey] as const,
+  catalog: (pubkey: string) => ["catalog", pubkey, "canonical"] as const,
 
   /** The issued instances of ONE coupon, loaded when the merchant opens it. */
   couponMints: (couponId: string) => ["coupon-mints", couponId] as const,
