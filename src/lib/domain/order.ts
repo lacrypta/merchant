@@ -312,6 +312,19 @@ function totalsByCurrency(lines: readonly OrderLine[]): [string, number][] {
   return [...map.entries()]
 }
 
+/**
+ * Free text bound for the zap request, with `%` swapped for the full-width
+ * `％`.
+ *
+ * Primal's LNURL callback answers 500 to any zap request carrying a bare `%`
+ * — it seems to URL-decode the already-decoded `nostr` param a second time —
+ * so a coupon named "5% al escabio" made every invoice fail. The full-width
+ * sign reads the same to a person and is inert to a decoder.
+ */
+export function wireSafe(text: string): string {
+  return text.replaceAll("%", "％")
+}
+
 function summaryContent(lines: readonly OrderLine[], note?: string): string {
   const count = lines.reduce((n, l) => n + l.qty, 0)
   const totals = totalsByCurrency(lines)
@@ -350,7 +363,7 @@ export function buildZapRequestTemplate(
   // to look up.
   if (input.coupon) {
     for (const c of input.coupon.applied) {
-      tags.push(["coupon", c.couponId, c.benefit.type, c.name])
+      tags.push(["coupon", c.couponId, c.benefit.type, wireSafe(c.name)])
     }
     for (const d of input.coupon.discount) {
       tags.push(["discount", formatAmount({ amount: d.amount, currency: d.currency }), d.currency])
@@ -371,7 +384,7 @@ export function buildZapRequestTemplate(
   return {
     kind: KINDS.ZAP_REQUEST,
     created_at: input.createdAt,
-    content: summaryContent(input.lines, input.buyerNote),
+    content: wireSafe(summaryContent(input.lines, input.buyerNote)),
     tags,
   }
 }

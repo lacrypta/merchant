@@ -18,6 +18,7 @@ import {
   settle,
   signZapRequest,
   verifyPreimage,
+  wireSafe,
   type BuildOrderInput,
   type Order,
   type OrderLine,
@@ -682,5 +683,13 @@ describe("coupon tags on the zap request", () => {
     const plain = signZapRequest(fitZapRequest(input()).template)
     const discounted = signZapRequest(withCoupon())
     expect(discounted.id).not.toBe(plain.id)
+  })
+})
+
+describe("wireSafe", () => {
+  // Primal answers 500 to a zap request with a bare `%` in it.
+  it("keeps percent signs out of the zap request", () => {
+    expect(wireSafe("5% al escabio")).toBe("5％ al escabio")
+    expect(wireSafe("Sin descuento")).toBe("Sin descuento")
   })
 })
