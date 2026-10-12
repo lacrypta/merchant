@@ -37,10 +37,11 @@ export function SwitchViewButton() {
     <Button variant="outline" asChild>
       <Link href={href}>
         <Icon className="size-4" aria-hidden />
-        {/* The icon carries it on a phone: the navbar there is already the
-            logo, the relay chip and the account control. */}
-        <span className="hidden sm:inline">{label}</span>
-        <span className="sr-only sm:hidden">{label}</span>
+        {/* The icon carries it until `lg`: below that the navbar also holds
+            the cart total, the relay chip and the account, and the label
+            pushed the page into a horizontal scroll. */}
+        <span className="hidden lg:inline">{label}</span>
+        <span className="sr-only lg:hidden">{label}</span>
       </Link>
     </Button>
   )

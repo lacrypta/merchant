@@ -100,7 +100,7 @@ export function AccountMenu() {
           aria-label={`Cuenta de ${label}`}
         >
           <NostrAvatar pubkey={pubkey} npub={state.npub} size={28} />
-          <span className="hidden min-w-0 flex-col items-start leading-tight sm:flex">
+          <span className="hidden min-w-0 flex-col items-start leading-tight lg:flex">
             <span className="max-w-[14ch] truncate text-sm font-semibold">
               {label}
             </span>
