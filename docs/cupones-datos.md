@@ -97,7 +97,7 @@ Indexes: `nonce` unique, `(definition_id, status)` for the dialog's list, `order
 
 ### Why the benefit is frozen
 
-Editing a coupon changes the definition, but the voucher the manager already signed says something else. Redemption serves the snapshot, so **a coupon in somebody's phone is worth what it said when they were given it**.
+Editing a coupon changes the definition, but the voucher the CMS already signed says something else. Redemption serves the snapshot, so **a coupon in somebody's phone is worth what it said when they were given it**.
 
 ### The order hangs off the redemption
 

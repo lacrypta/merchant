@@ -11,9 +11,9 @@ Merchant               This app                    Database        Relays
     │                     │                          │               │
     │ "Activar servicio"  │                          │               │
     ├────────────────────►│ GET /api/coupons/manager │               │
-    │                     │◄─── managerPubkey ───────┤               │
+    │                     │◄─── CMS pubkey ──────────┤               │
     │  signs the 30078    │                          │               │
-    │  (p tag = manager)  │                          │               │
+    │  (p tag = CMS)      │                          │               │
     │◄────────────────────┤                          │               │
     ├────────────────────►│ PUT /discovery ─────────►│ stores        │
     │                     ├─────────── publishes ────────────────────►│
