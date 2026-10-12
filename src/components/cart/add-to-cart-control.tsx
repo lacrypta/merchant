@@ -52,7 +52,7 @@ export function AddToCartControl({ item }: { item: CartItem }) {
 
   return (
     <div className={cn("flex shrink-0 items-center justify-end gap-2", CONTROL_WIDTH)}>
-      {left !== null && left <= 3 ? (
+      {(left !== null && left <= 3) || (atCap && item.maxQty) ? (
         <span className="hidden text-xs text-warning sm:inline">
           {atCap ? "Máximo" : `Quedan ${left}`}
         </span>

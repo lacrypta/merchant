@@ -15,8 +15,7 @@ import { TickerChip } from "@/components/ui/ticker-chip"
 import { decodeInvoice, DEFAULT_EXPIRY_SECONDS } from "@/lib/domain/bolt11"
 import {
   describeBenefit,
-  discountEntries,
-  freeUnitsFor,
+  stackDiscounts,
   type AppliedCoupon,
 } from "@/lib/domain/coupon"
 import { formatPrice } from "@/lib/domain/price"
@@ -318,8 +317,14 @@ export function CheckoutScreen({
           amountMsat: quote.msat,
           comment: null,
           createdAt: newOrderCreatedAt(),
-          coupon: activeCoupon
-            ? { applied: activeCoupon, discount: priced?.entries ?? [] }
+          coupon: priced && (activeCoupon || priced.productCoupons.length > 0)
+            ? {
+                applied: [
+                  ...priced.productCoupons.map((c) => ({ ...c, couponId: c.id })),
+                  ...(activeCoupon ? [activeCoupon] : []),
+                ],
+                discount: priced.entries,
+              }
             : undefined,
         })
         const zapRequest = signZapRequest(fitted.template)
@@ -350,6 +355,7 @@ export function CheckoutScreen({
           proofs: [],
           anomalies: [],
           ...(activeCoupon ? { coupon: activeCoupon } : {}),
+          ...(priced?.productCoupons.length ? { productCoupons: priced.productCoupons } : {}),
         }
       }
 
@@ -619,10 +625,14 @@ export function CheckoutScreen({
           {/* The coupon gets its own row rather than being folded into the
               line items: the shopper should be able to see the discount they
               are getting, and so should the merchant reading the receipt. */}
-          {activeCouponForDisplay && (priced?.entries.length ?? 0) > 0 ? (
+          {priced && priced.entries.length > 0 ? (
             <div className="mt-3 flex justify-between gap-3 border-t border-border pt-3 text-sm">
               <span className="min-w-0 truncate text-muted-foreground">
-                Cupón {activeCouponForDisplay.name}
+                Cupón{" "}
+                {[
+                  ...priced.productCoupons.map((c) => c.name),
+                  ...(activeCouponForDisplay && !priced.unmet ? [activeCouponForDisplay.name] : []),
+                ].join(" + ")}
               </span>
               <span className="numeric shrink-0 text-success">
                 −
@@ -936,9 +946,10 @@ function PaidPanel({
    * the same functions the checkout priced with, so the numbers match what was
    * charged without needing a rate table.
    */
-  const benefit = order.coupon?.benefit ?? null
-  const discount = benefit ? discountEntries(order.lines, benefit) : []
-  const freeUnits = benefit ? freeUnitsFor(order.lines, benefit) : []
+  const { entries: discount, freeUnits } = stackDiscounts(order.lines, [
+    ...(order.productCoupons ?? []).map((c) => c.benefit),
+    ...(order.coupon ? [order.coupon.benefit] : []),
+  ])
   const free = order.lines.map((l) => freeUnits.find((f) => f.d === l.d)?.qty ?? 0)
   const titleOf = (d: string) => order.lines.find((l) => l.d === d)?.title
 
@@ -1000,6 +1011,22 @@ function PaidPanel({
           {/* The receipt has to say what was taken off and why, or the amounts
               above do not add up to the amount that was charged — and the
               customer is holding this screen up to the cashier. */}
+          {(order.productCoupons ?? []).map((c) => (
+            <div key={c.id} className="mt-3 space-y-0.5 border-t border-border pt-3">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <TicketPercent className="size-4 shrink-0 text-primary" aria-hidden />
+                <span className="truncate">Cupón {c.name}</span>
+              </span>
+              <p className="text-xs text-muted-foreground">
+                {describeBenefit(c.benefit, titleOf)}
+              </p>
+            </div>
+          ))}
+          {discount.length > 0 && !order.coupon ? (
+            <p className="numeric text-right text-success">
+              −{discount.map((d) => formatPrice(d.amount, d.currency)).join(" − ")}
+            </p>
+          ) : null}
           {order.coupon ? (
             <div className="mt-3 space-y-0.5 border-t border-border pt-3">
               <div className="flex justify-between gap-3">

@@ -613,7 +613,7 @@ describe("coupon tags on the zap request", () => {
   const withCoupon = (over: Partial<BuildOrderInput> = {}) =>
     fitZapRequest(
       input({
-        coupon: { applied, discount: [{ currency: "ARS", amount: 2190 }] },
+        coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 2190 }] },
         ...over,
       })
     ).template
@@ -628,7 +628,7 @@ describe("coupon tags on the zap request", () => {
     const l = [{ d: lines(1)[0]!.d, qty: 1, title: "x", unitAmount: 1000, currency: "ARS" }]
     const tags = withCoupon({
       lines: l,
-      coupon: { applied, discount: [{ currency: "ARS", amount: 100 }] },
+      coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 100 }] },
     }).tags
     expect(tags).toContainEqual(["total", "1000", "ARS"])
     expect(tags).toContainEqual(["discount", "100", "ARS"])
@@ -641,7 +641,7 @@ describe("coupon tags on the zap request", () => {
         { d: lines(2)[1]!.d, qty: 1, title: "b", unitAmount: 2, currency: "USD" },
       ],
       coupon: {
-        applied,
+        applied: [applied],
         discount: [
           { currency: "ARS", amount: 10 },
           { currency: "USD", amount: 0.2 },
@@ -665,7 +665,7 @@ describe("coupon tags on the zap request", () => {
     const fitted = fitZapRequest(
       input({
         lines: lines(40),
-        coupon: { applied, discount: [{ currency: "ARS", amount: 5000 }] },
+        coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 5000 }] },
       })
     )
     expect(fitted.fidelity).toBeGreaterThan(1)

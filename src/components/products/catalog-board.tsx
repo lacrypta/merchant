@@ -800,6 +800,20 @@ function PriceCell({
     onCommit(amount)
   }
 
+  // A coupon product is never charged for, so there is no price to edit.
+  if (product.coupon) {
+    return (
+      <span
+        className={cn(
+          "numeric shrink-0 px-1 font-semibold",
+          dimmed ? "text-muted-foreground line-through decoration-1" : "text-primary"
+        )}
+      >
+        CUPÓN
+      </span>
+    )
+  }
+
   if (!editing) {
     return (
       <button

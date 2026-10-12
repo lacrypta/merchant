@@ -52,7 +52,7 @@ import { cn } from "@/lib/utils"
  */
 export function CouponsScreen() {
   const { state } = useAuth()
-  const { products } = useCatalog()
+  const { products, saveProducts } = useCatalog()
   const {
     coupons,
     minters,
@@ -287,8 +287,24 @@ export function CouponsScreen() {
               key={editing?.id ?? "new"}
               existing={editing ?? undefined}
               onSubmit={async (input) => {
-                if (editing) await update(editing.id, input)
-                else await create(input)
+                if (editing) {
+                  const saved = await update(editing.id, input)
+                  // Coupon products carry the terms on their own event, so an
+                  // edit lands in the catalog's pending changes for them to be
+                  // re-signed — otherwise the tills keep the old terms.
+                  const users = products.filter((p) => p.coupon?.id === saved.id)
+                  if (users.length > 0) {
+                    saveProducts(
+                      users.map((p) => ({
+                        ...p,
+                        coupon:
+                          saved.open && saved.benefit
+                            ? { id: saved.id, name: saved.name, benefit: saved.benefit }
+                            : undefined,
+                      }))
+                    )
+                  }
+                } else await create(input)
                 setCreating(false)
                 setEditing(null)
               }}
@@ -386,7 +402,7 @@ function CouponTable({
               const archived = c.archivedAt !== null
               const exhausted = c.maxUses !== null && c.minted >= c.maxUses
               const expired = c.expiresAt !== null && c.expiresAt * 1000 <= now
-              const mintable = !archived && !exhausted && !expired && !!c.benefit
+              const mintable = !c.open && !archived && !exhausted && !expired && !!c.benefit
 
               return (
                 <tr
@@ -417,6 +433,7 @@ function CouponTable({
                         </p>
                       ) : null}
                       <div className="mt-1 flex flex-wrap gap-1">
+                        {c.open ? <Badge variant="outline">Libre</Badge> : null}
                         {archived ? <Badge variant="outline">Archivado</Badge> : null}
                         {expired && !archived ? (
                           <Badge variant="outline">Vencido</Badge>

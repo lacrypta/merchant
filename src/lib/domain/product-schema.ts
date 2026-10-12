@@ -27,19 +27,33 @@ export const productFormSchema = z
     description: z.string().max(20_000).default(""),
     amount: z
       .number({ message: "Poné un precio" })
-      .positive("Tiene que ser mayor a 0"),
+      .nonnegative("Tiene que ser mayor a 0"),
     currency: z.enum(CURRENCIES as unknown as [string, ...string[]]),
     trackStock: z.boolean(),
     stock: z.number().int("Tiene que ser un número entero").min(0).nullable(),
     visibility: z.enum(["on-sale", "hidden", "pre-order"]),
     status: z.enum(["active", "sold"]),
     categories: z.array(z.string()).max(4, "Máximo 4 categorías"),
+    /** "" ⇒ an ordinary product; otherwise the cupón libre it applies. */
+    couponId: z.string(),
+    /** Units per order. null ⇒ no limit. */
+    maxQty: z
+      .number()
+      .int("Tiene que ser un número entero")
+      .min(1, "Tiene que ser 1 o más")
+      .nullable(),
     imageUrl: z
       .string()
       .trim()
       .url("Tiene que ser una URL válida")
       .optional()
       .or(z.literal("")),
+  })
+  .refine((v) => v.amount > 0 || v.couponId !== "", {
+    // Free is legal only for a coupon product: a Vaso that just switches the
+    // discount on. Anything else at zero is a typo that gives stock away.
+    message: "Tiene que ser mayor a 0",
+    path: ["amount"],
   })
   .refine((v) => v.currency !== "SAT" || Number.isInteger(v.amount), {
     message: "En sats el precio tiene que ser entero",

@@ -40,6 +40,7 @@ export function ProductImageUpload({
   validationError,
   title = "Imagen del producto",
   alt = "Vista previa del producto",
+  compact = false,
 }: {
   value: ProductImage | null
   onChange: (image: ProductImage | null) => void
@@ -48,6 +49,12 @@ export function ProductImageUpload({
   /** Heading once an image is set. Coupons reuse this uploader verbatim. */
   title?: string
   alt?: string
+  /**
+   * Just the square image, filling whatever card it sits in: click it to pick
+   * a file, with replace/remove over it. For the form's live preview, where
+   * the image the merchant edits IS the one the preview shows.
+   */
+  compact?: boolean
 }) {
   const { signer } = useAuth()
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -156,8 +163,9 @@ export function ProductImageUpload({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-xl border bg-card transition-[border-color,background-color]",
-        dragging ? "border-primary bg-primary/5" : "border-border-strong",
+        "overflow-hidden transition-[border-color,background-color]",
+        compact ? "border-b" : "rounded-xl border bg-card",
+        dragging ? "border-primary bg-primary/5" : compact ? "border-border" : "border-border-strong",
         validationError || upload.status === "error"
           ? "border-danger/70"
           : null
@@ -198,76 +206,136 @@ export function ProductImageUpload({
         }}
       />
 
-      <div className="grid min-h-36 grid-cols-[7.5rem_minmax(0,1fr)]">
-        <div className="relative overflow-hidden border-r border-border bg-surface-3">
-          {previewUrl ? (
-            // Blob previews and arbitrary Blossom hosts cannot use next/image.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={previewUrl}
-              alt={alt}
-              className="size-full object-cover"
-            />
-          ) : (
-            <div className="grid-flat flex size-full items-center justify-center">
-              <ImagePlus
-                className="size-8 text-muted-foreground"
-                aria-hidden
+      {compact ? (
+        <div className="group relative aspect-square bg-surface-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={openPicker}
+            aria-label={previewUrl ? "Reemplazar imagen" : "Elegir imagen"}
+            className="group/pick size-full cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:cursor-wait"
+          >
+            {previewUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previewUrl}
+                alt={alt}
+                className="size-full object-cover transition-[filter] duration-200 group-hover/pick:brightness-75"
               />
+            ) : (
+              <span className="relative flex size-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground transition-colors duration-200 group-hover/pick:bg-primary/10 group-hover/pick:text-primary">
+                {/* Its own layer: grid-flat masks everything inside it. */}
+                <span aria-hidden className="grid-flat absolute inset-0" />
+                <ImagePlus
+                  className="size-8 transition-transform duration-200 group-hover/pick:scale-110"
+                  aria-hidden
+                />
+                Subí una imagen
+              </span>
+            )}
+          </button>
+          {previewUrl && !busy ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-between gap-2 bg-gradient-to-t from-background/80 to-transparent p-2 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="pointer-events-auto"
+                onClick={openPicker}
+              >
+                <CloudUpload aria-hidden />
+                Reemplazar
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="pointer-events-auto text-muted-foreground hover:text-danger"
+                aria-label="Quitar imagen"
+                onClick={removeImage}
+              >
+                <Trash2 aria-hidden />
+              </Button>
             </div>
-          )}
-
+          ) : null}
           {busy ? (
             <div className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-[2px]">
               <Loader2 className="size-7 animate-spin text-primary" aria-hidden />
             </div>
           ) : null}
         </div>
+      ) : (
+        <div className="grid min-h-36 grid-cols-[7.5rem_minmax(0,1fr)]">
+          <div className="relative overflow-hidden border-r border-border bg-surface-3">
+            {previewUrl ? (
+              // Blob previews and arbitrary Blossom hosts cannot use next/image.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previewUrl}
+                alt={alt}
+                className="size-full object-cover"
+              />
+            ) : (
+              <div className="grid-flat flex size-full items-center justify-center">
+                <ImagePlus
+                  className="size-8 text-muted-foreground"
+                  aria-hidden
+                />
+              </div>
+            )}
 
-        <div className="flex min-w-0 flex-col justify-center gap-3 p-4">
-          <div className="space-y-1">
-            <p className="text-sm font-semibold">
-              {previewUrl ? title : "Subí una imagen"}
-            </p>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              JPG, PNG, WebP, GIF o AVIF · máximo 10 MB
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="tap-44"
-              disabled={busy}
-              onClick={openPicker}
-            >
-              <CloudUpload aria-hidden />
-              {previewUrl ? "Reemplazar" : "Elegir imagen"}
-            </Button>
-            {previewUrl && !busy ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="tap-44 text-muted-foreground hover:text-danger"
-                aria-label="Quitar imagen"
-                onClick={removeImage}
-              >
-                <Trash2 aria-hidden />
-              </Button>
+            {busy ? (
+              <div className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-[2px]">
+                <Loader2 className="size-7 animate-spin text-primary" aria-hidden />
+              </div>
             ) : null}
           </div>
 
-          {upload.status === "idle" ? (
-            <p className="text-[0.6875rem] text-muted-foreground">
-              Blossom automático · {POPULAR_BLOSSOM_SERVERS.length} servidores
-              de respaldo
-            </p>
-          ) : null}
+          <div className="flex min-w-0 flex-col justify-center gap-3 p-4">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold">
+                {previewUrl ? title : "Subí una imagen"}
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                JPG, PNG, WebP, GIF o AVIF · máximo 10 MB
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="tap-44"
+                disabled={busy}
+                onClick={openPicker}
+              >
+                <CloudUpload aria-hidden />
+                {previewUrl ? "Reemplazar" : "Elegir imagen"}
+              </Button>
+              {previewUrl && !busy ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="tap-44 text-muted-foreground hover:text-danger"
+                  aria-label="Quitar imagen"
+                  onClick={removeImage}
+                >
+                  <Trash2 aria-hidden />
+                </Button>
+              ) : null}
+            </div>
+
+            {upload.status === "idle" ? (
+              <p className="text-[0.6875rem] text-muted-foreground">
+                Blossom automático · {POPULAR_BLOSSOM_SERVERS.length} servidores
+                de respaldo
+              </p>
+            ) : null}
+          </div>
         </div>
-      </div>
+      )}
 
       {upload.status === "uploading" ? (
         <div

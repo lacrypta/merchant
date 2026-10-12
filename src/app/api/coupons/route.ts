@@ -121,6 +121,9 @@ export async function POST(request: Request) {
     return fail("El máximo de usos no es válido.", 400, METHODS)
   }
 
+  const open = body.open ?? false
+  if (typeof open !== "boolean") return fail("El tipo de cupón no es válido.", 400, METHODS)
+
   const expires = parseTimestamp(body.expiresAt)
   if (!expires.ok) return fail("La fecha de vencimiento no es válida.", 400, METHODS)
   // Only on create. PATCH deliberately allows a past date — that is the kill
@@ -136,6 +139,7 @@ export async function POST(request: Request) {
       imageUrl,
       benefit: benefit.value,
       maxUses,
+      open,
       expiresAt: expires.value,
     })
     return ok({ coupon: toDefinitionJson({ ...row, claimed: 0 }) }, METHODS, 201)

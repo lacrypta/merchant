@@ -41,10 +41,11 @@ export function ProductDialog({
     <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
       <ResponsiveDialogContent className="sm:max-w-3xl">
         <ResponsiveDialogHeader>
-          <ResponsiveDialogTitle>
+          <ResponsiveDialogTitle className="text-xl font-semibold">
             {existing ? "Editar producto" : "Nuevo producto"}
           </ResponsiveDialogTitle>
-          <ResponsiveDialogDescription>
+          {/* Screen readers only: Radix wants every dialog described. */}
+          <ResponsiveDialogDescription className="sr-only">
             Se publica en nostr firmado con tu npub.
           </ResponsiveDialogDescription>
         </ResponsiveDialogHeader>

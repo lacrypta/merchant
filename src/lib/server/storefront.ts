@@ -3,7 +3,7 @@ import "server-only"
 import { cache } from "react"
 import { nip19 } from "nostr-tools"
 
-import type { CartItem, CatalogIndex } from "@/lib/domain/cart"
+import { toCartItem, type CartItem, type CatalogIndex } from "@/lib/domain/cart"
 import { groupCatalog, type CategoryGroup } from "@/lib/domain/catalog-group"
 import { parseCategoryEvent, type Category } from "@/lib/domain/category"
 import { KINDS } from "@/lib/domain/kinds"
@@ -263,19 +263,7 @@ export function toMerchantSummary(
 export function toCatalogIndex(store: Storefront): CatalogIndex {
   const index: Record<string, CartItem> = {}
   for (const group of store.groups) {
-    for (const p of group.products) {
-      const thumb = p.images.find((i) => i.width === 256) ?? p.images[0]
-      index[p.d] = {
-        d: p.d,
-        title: p.title,
-        thumbUrl: thumb?.url,
-        price: p.price
-          ? { amount: p.price.amount, currency: p.price.currency }
-          : null,
-        stock: p.stock,
-        visibility: p.visibility,
-      }
-    }
+    for (const p of group.products) index[p.d] = toCartItem(p)
   }
   return index
 }
