@@ -16,6 +16,7 @@ import { formatPrice } from "@/lib/domain/price"
 import type { SatPriceTable } from "@/lib/domain/rates"
 import {
   allocateOrderLineSats,
+  couponLabel,
   type AllocatedZapOrderLine,
   type SatAllocationQuality,
   type ZapOrderTotal,
@@ -80,16 +81,16 @@ export function buildOrderView(
   order: ZapReceiptOrder,
   rates: SatPriceTable | null,
   /**
-   * The coupon's frozen terms, so the discount lands on the line it came off.
-   * Null when the merchant's records no longer have them — the totals stay
-   * right, only the per-line attribution falls back to proportional.
+   * The coupons' terms, so the discount lands on the line it came off. Empty
+   * when the merchant's records no longer have them — the totals stay right,
+   * only the per-line attribution falls back to proportional.
    */
-  benefit: Benefit | null = null
+  benefits: readonly Benefit[] = []
 ): OrderView | null {
   const anchor = order.receipt ?? order.zapRequest
   if (!anchor) return null
 
-  const allocation = allocateOrderLineSats(order, rates, benefit)
+  const allocation = allocateOrderLineSats(order, rates, benefits)
   const totals = order.totals.length > 0 ? order.totals : aggregateTotals(allocation.lines)
 
   return {
@@ -244,17 +245,17 @@ export function OrderDetailDialog({
 
               {/* Without this the numbers do not add up: the item totals are
                   GROSS, and what the invoice charged is gross minus this. */}
-              {view.order.coupon ? (
+              {view.order.coupons.length > 0 ? (
                 <section
                   aria-label="Cupón aplicado"
                   className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surface-2 px-4 py-3"
                 >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">
-                      Cupón {view.order.coupon.name || view.order.coupon.type}
+                      Cupón {couponLabel(view.order)}
                     </p>
                     <p className="truncate-middle numeric text-xs text-muted-foreground">
-                      {view.order.coupon.id}
+                      {view.order.coupons.map((c) => c.id).join(" · ")}
                     </p>
                   </div>
                   {view.order.discounts.length > 0 ? (

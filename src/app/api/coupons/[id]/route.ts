@@ -125,6 +125,11 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     patch.expiresAt = expires.value
   }
 
+  if (body.open !== undefined) {
+    if (typeof body.open !== "boolean") return fail("El tipo de cupón no es válido.", 400, METHODS)
+    patch.open = body.open
+  }
+
   if (body.archived !== undefined) {
     if (typeof body.archived !== "boolean") {
       return fail("El estado de archivado no es válido.", 400, METHODS)

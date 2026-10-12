@@ -1,3 +1,4 @@
+import { CouponPrice } from "@/components/cart/coupon-price"
 import { formatPrice } from "@/lib/domain/price"
 import type { Product } from "@/lib/domain/product"
 
@@ -79,7 +80,9 @@ export function ProductRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-        {product.price ? (
+        {product.coupon ? (
+          <CouponPrice coupon={product.coupon} />
+        ) : product.price ? (
           <p className="numeric text-right text-sm font-semibold text-primary sm:text-base">
             {formatPrice(product.price.amount, product.price.currency)}
           </p>

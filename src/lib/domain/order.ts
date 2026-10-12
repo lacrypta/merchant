@@ -4,7 +4,7 @@ import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 
 import { decodeInvoice } from "@/lib/domain/bolt11"
 import type { CartLine } from "@/lib/domain/cart"
-import type { AppliedCoupon, DiscountEntry } from "@/lib/domain/coupon"
+import type { AppliedCoupon, Benefit, DiscountEntry, ProductCoupon } from "@/lib/domain/coupon"
 import { KINDS } from "@/lib/domain/kinds"
 import { formatAmount } from "@/lib/domain/price"
 import { nowSeconds } from "@/lib/nostr/created-at"
@@ -188,6 +188,8 @@ export interface Order {
    * order reuses that redemption. Additive, so ORDER_VERSION does not move.
    */
   coupon?: AppliedCoupon
+  /** The basket's product coupons that discounted it. Additive, like `coupon`. */
+  productCoupons?: ProductCoupon[]
 }
 
 export const ORDER_VERSION = 1 as const
@@ -264,8 +266,14 @@ export interface BuildOrderInput {
   comment: string | null
   buyerNote?: string
   createdAt: number
-  /** Applied coupon and what it took off, per currency. */
-  coupon?: { applied: AppliedCoupon; discount: readonly DiscountEntry[] }
+  /**
+   * Every coupon on the order — the product ones and the typed one — and what
+   * they took off together, per currency.
+   */
+  coupon?: {
+    applied: readonly { couponId: string; name: string; benefit: Benefit }[]
+    discount: readonly DiscountEntry[]
+  }
 }
 
 type ItemTagger = ((l: OrderLine) => string[]) | null
@@ -302,6 +310,19 @@ function totalsByCurrency(lines: readonly OrderLine[]): [string, number][] {
     map.set(l.currency, (map.get(l.currency) ?? 0) + l.unitAmount * l.qty)
   }
   return [...map.entries()]
+}
+
+/**
+ * Free text bound for the zap request, with `%` swapped for the full-width
+ * `％`.
+ *
+ * Primal's LNURL callback answers 500 to any zap request carrying a bare `%`
+ * — it seems to URL-decode the already-decoded `nostr` param a second time —
+ * so a coupon named "5% al escabio" made every invoice fail. The full-width
+ * sign reads the same to a person and is inert to a decoder.
+ */
+export function wireSafe(text: string): string {
+  return text.replaceAll("%", "％")
 }
 
 function summaryContent(lines: readonly OrderLine[], note?: string): string {
@@ -341,12 +362,9 @@ export function buildZapRequestTemplate(
   // below: a discount the merchant cannot see is worse than an item they have
   // to look up.
   if (input.coupon) {
-    tags.push([
-      "coupon",
-      input.coupon.applied.couponId,
-      input.coupon.applied.benefit.type,
-      input.coupon.applied.name,
-    ])
+    for (const c of input.coupon.applied) {
+      tags.push(["coupon", c.couponId, c.benefit.type, wireSafe(c.name)])
+    }
     for (const d of input.coupon.discount) {
       tags.push(["discount", formatAmount({ amount: d.amount, currency: d.currency }), d.currency])
     }
@@ -366,7 +384,7 @@ export function buildZapRequestTemplate(
   return {
     kind: KINDS.ZAP_REQUEST,
     created_at: input.createdAt,
-    content: summaryContent(input.lines, input.buyerNote),
+    content: wireSafe(summaryContent(input.lines, input.buyerNote)),
     tags,
   }
 }

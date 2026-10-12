@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -91,6 +92,13 @@ export const couponDefinitions = pgTable(
 
     /** null ⇒ unlimited mints. */
     maxUses: integer("max_uses"),
+    /**
+     * A "cupón libre": never minted, never claimed, no nonce. Anyone can use it,
+     * as often as they like — the merchant hands it out through a coupon
+     * PRODUCT in their catalog, which carries the terms on the signed event.
+     * `max_uses` means nothing for it.
+     */
+    open: boolean("open").notNull().default(false),
     /**
      * Incremented inside the guarded UPDATE that mints, which is what makes the
      * cap hold under concurrency — counting rows in coupon_mints would race.

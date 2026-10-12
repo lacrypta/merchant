@@ -23,7 +23,7 @@ If you are integrating a POS, [API](./cupones-api.md) and [Nostr events](./cupon
 |---|---|---|
 | **Merchant** (owner) | Creates coupons, authorizes minters, signs the announcement | Theirs (NIP-07 / NIP-46) |
 | **Minter** | Mints coupons for a merchant who authorized them | Theirs |
-| **Manager** | Signs the vouchers. It is this server | `COUPON_MANAGER_NSEC` |
+| **Coupon Manager Service (CMS)** | Create/Update/Delete/Burn coupons and sign vouchers. It is this server | `COUPON_MANAGER_NSEC` |
 | **Bearer** | Holds the nonce and redeems it. Needs no key | None — the nonce is the credential |
 
 One deployment serves **many merchants** at once. Everything the API returns is scoped by the pubkey that signed the request: somebody else's coupon is indistinguishable from one that does not exist, which is the correct answer to give a stranger probing UUIDs.
@@ -46,7 +46,7 @@ The practical consequence: **there is no orders table**, and yet orders are stor
 
 ```bash
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
-COUPON_MANAGER_NSEC=nsec1…       # the identity that signs the vouchers
+COUPON_MANAGER_NSEC=nsec1…       # the CMS identity that signs the vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
 SESSION_JWT_SECRET=…             # signs the session JWTs
 ```
@@ -55,7 +55,7 @@ Without `DATABASE_URL` or without `COUPON_MANAGER_NSEC` the coupon endpoints ans
 
 Two of them are signing keys, and they fail differently on purpose:
 
-- **`COUPON_MANAGER_NSEC` has no fallback.** It signs **vouchers** — long-lived artifacts that a POS verifies months later against the key the merchant named — so a key that silently rotates invalidates every one of them with no warning. Its absence is a 503. It does **not** sign the announcement: that one the merchant signs with their own key, and this service could not forge it (see [Nostr events](./cupones-nostr.md)).
+- **`COUPON_MANAGER_NSEC` has no fallback.** It signs **vouchers** — long-lived artifacts that a POS verifies months later against the key the merchant named — so a key that silently rotates invalidates every one of them with no warning. Its absence is a 503. It does **not** sign the announcement: that one the merchant signs with their own key, and the CMS could not forge it (see [Nostr events](./cupones-nostr.md)).
 - **`SESSION_JWT_SECRET` does have a per-process random fallback**, like `LN_PROXY_SECRET`: the worst that happens is one extra signature. **But with more than one instance it must be set**, or a token minted by A is rejected by B and the client re-mints every other request — worse than having no session at all.
 
 `NEXT_PUBLIC_APP_URL` signs nothing; it configures **which origin NIP-98 validates against**. When set, it is the only one accepted and the `x-forwarded-*` headers are ignored. See [API § NIP-98](./cupones-api.md#nip-98).

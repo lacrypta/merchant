@@ -272,6 +272,8 @@ export interface DefinitionJson {
   image: string | null
   benefit: Benefit | null
   maxUses: number | null
+  /** A cupón libre — see `open` in schema.ts. */
+  open: boolean
   minted: number
   claimed: number
   expiresAt: number | null
@@ -297,6 +299,7 @@ export function toDefinitionJson(row: DefinitionWithCounts): DefinitionJson {
     image: row.imageUrl,
     benefit: benefit.ok ? benefit.value : null,
     maxUses: row.maxUses,
+    open: row.open,
     minted: row.mintedCount,
     claimed: row.claimed,
     expiresAt: seconds(row.expiresAt),

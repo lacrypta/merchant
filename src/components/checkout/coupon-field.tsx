@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   describeBenefit,
+  discountEntries,
   isValidNonce,
   parseBenefit,
   type AppliedCoupon,
@@ -45,7 +46,7 @@ const MESSAGES: Record<string, string> = {
 }
 
 export function CouponField() {
-  const { merchant, coupon, priced, applyCoupon, removeCoupon, catalog } = useCart()
+  const { merchant, cart, coupon, priced, applyCoupon, removeCoupon, catalog } = useCart()
 
   const [value, setValue] = React.useState("")
   const [checking, setChecking] = React.useState(false)
@@ -141,9 +142,40 @@ export function CouponField() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  if (coupon) {
+  /**
+   * Coupons that came with a product in the basket. No remove button: taking
+   * the product out is how they come off.
+   */
+  const productCards = (priced?.productCoupons ?? []).map((c) => (
+    <section key={c.id} className="rounded-2xl border border-primary/40 bg-surface-2 p-4">
+      <div className="min-w-0 space-y-1">
+        <p className="flex items-center gap-1.5 text-sm font-semibold">
+          <TicketPercent className="size-4 shrink-0 text-primary" aria-hidden />
+          <span className="truncate">{c.name}</span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {describeBenefit(c.benefit, (d) => catalog[d]?.title)}
+        </p>
+        <p className="numeric text-sm text-success">
+          −
+          {discountEntries(cart.lines, c.benefit)
+            .map((d) => formatPrice(d.amount, d.currency))
+            .join(" − ")}
+        </p>
+      </div>
+    </section>
+  ))
+
+  return (
+    <div className="space-y-3">
+      {productCards}
+      {coupon ? appliedCard(coupon) : couponForm()}
+    </div>
+  )
+
+  function appliedCard(coupon: AppliedCoupon) {
     const unmet = priced?.unmet ?? null
-    const discount = priced?.entries ?? []
+    const discount = unmet ? [] : discountEntries(cart.lines, coupon.benefit)
 
     return (
       <section className="rounded-2xl border border-primary/40 bg-surface-2 p-4">
@@ -182,36 +214,38 @@ export function CouponField() {
     )
   }
 
-  return (
-    <section className="space-y-2">
-      <form
-        noValidate
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void apply(value.trim())
-        }}
-      >
-        <Input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="¿Tenés un cupón?"
-          aria-label="Código de cupón"
-          aria-invalid={!!error}
-          className="numeric"
-        />
-        <Button type="submit" variant="outline" disabled={checking || !value.trim()}>
-          {checking ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-          Aplicar
-        </Button>
-      </form>
-      {error ? (
-        <p role="alert" className="text-sm text-danger">
-          {error}
-        </p>
-      ) : null}
-    </section>
-  )
+  function couponForm() {
+    return (
+      <section className="space-y-2">
+        <form
+          noValidate
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void apply(value.trim())
+          }}
+        >
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="¿Tenés un cupón?"
+            aria-label="Código de cupón"
+            aria-invalid={!!error}
+            className="numeric"
+          />
+          <Button type="submit" variant="outline" disabled={checking || !value.trim()}>
+            {checking ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+            Aplicar
+          </Button>
+        </form>
+        {error ? (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        ) : null}
+      </section>
+    )
+  }
 }
 
 /**

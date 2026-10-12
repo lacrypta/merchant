@@ -16,7 +16,7 @@ export {
   restoreFromNbunksec,
   ensureNostrGlobals,
   SIGNING_KINDS,
-  NOSTR_CONNECT_RELAY,
+  NOSTR_CONNECT_RELAYS,
 } from "@/lib/nostr/adapters/applesauce"
 
 export type {

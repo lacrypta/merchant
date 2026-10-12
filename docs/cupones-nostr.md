@@ -5,7 +5,7 @@ Two. One is signed by the merchant and published; the other is signed by this se
 | Kind | Who signs it | Published | What for |
 |---|---|---|---|
 | `30078` | The merchant | Yes | Saying where the coupon service lives, and naming its key |
-| `20402` | This server (manager) | No | Proving a coupon came from that service |
+| `20402` | This server (CMS) | No | Proving a coupon came from that service |
 
 ---
 
@@ -47,7 +47,7 @@ The parsed `content`:
 | content | `mintUrl` | Absolute. POST, NIP-98, authorized npubs only |
 | content | `claimUrl` | Absolute. GET to check, POST to redeem |
 
-**Why the manager key is a tag and not a field.** A relay indexes tags; it cannot index a field inside a content string. With `p` on the outside, *"which merchants named this service?"* is a filter anybody can run — `{"kinds":[30078],"#d":["lacrypta.merchant/coupons"],"#p":["<manager>"]}` — instead of downloading every announcement in existence and parsing them one by one.
+**Why the CMS key is a tag and not a field.** A relay indexes tags; it cannot index a field inside a content string. With `p` on the outside, *"which merchants named this service?"* is a filter anybody can run — `{"kinds":[30078],"#d":["lacrypta.merchant/coupons"],"#p":["<cms-pubkey>"]}` — instead of downloading every announcement in existence and parsing them one by one.
 
 > **How to read it correctly, if you are writing a client.** Always fetch the **newest** by author + `d`, and only then look at the `p`. **Never subscribe filtering by `#p`**: the event is addressable, and asking for "the announcement that names me" can hand back an **older** version while the current one names somebody else. A POS reading that would believe it is still responsible for coupons that are no longer its own. The order matters: newest first, whose second.
 
@@ -112,7 +112,7 @@ Optional keys are **omitted**, not sent as `null`. `parseVoucherContent` discard
 
 **Why 20402:** it sits in the ephemeral range (20000–29999), so if it ever leaks to a relay, one that follows the spec relays it but does not store it — which is right for an event whose content carries a bearer nonce. It is free in the NIP registry, and it is the ephemeral mirror of 30402, the listing kind this app is built on.
 
-**What it is for:** the API responses are JSON over HTTPS, which proves the coupon came from whoever holds the TLS certificate. The manager's signature proves it came from the service **the merchant named in their announcement**, which is what a cashier actually needs to know.
+**What it is for:** the API responses are JSON over HTTPS, which proves the coupon came from whoever holds the TLS certificate. The CMS's signature proves it came from the service **the merchant named in their announcement**, which is what a cashier actually needs to know.
 
 ### How to verify it, without calling us
 
@@ -120,10 +120,10 @@ Optional keys are **omitted**, not sent as `null`. `parseVoucherContent` discard
 import { verifyEvent } from "nostr-tools/pure"
 
 // 1. Read the merchant's NEWEST 30078 (by author + `d`) → its `p` tag
-const managerPubkey = announcement.tags.find((t) => t[0] === "p")?.[1]
+const cmsPubkey = announcement.tags.find((t) => t[0] === "p")?.[1]
 
 // 2. The voucher has to come from that key
-if (voucher.pubkey !== managerPubkey) throw new Error("different issuer")
+if (voucher.pubkey !== cmsPubkey) throw new Error("different issuer")
 
 // 3. Valid signature — re-deriving the id, not trusting library memos
 if (!verifyEvent(voucher)) throw new Error("invalid signature")

@@ -1,3 +1,4 @@
+import { parseProductCouponTag, productCouponTag, type ProductCoupon } from "@/lib/domain/coupon"
 import { KINDS } from "@/lib/domain/kinds"
 import { derivePosId } from "@/lib/domain/pos-id"
 import { formatAmount, parsePriceTag, type Price } from "@/lib/domain/price"
@@ -50,6 +51,14 @@ export interface Product {
   price: Price | null
   /** null = untracked -> no stock/quantity tags emitted at all. */
   stock: number | null
+  /**
+   * A coupon product: having it in the cart applies this cupón libre, once per
+   * order. The terms ride on the event (`["coupon", id, name, benefitJson]`) so
+   * a till applies them offline, on the merchant's signature.
+   */
+  coupon?: ProductCoupon
+  /** Most units one order may hold (`["max_qty", n]`). Absent ⇒ no limit. */
+  maxQty?: number
   visibility: Visibility
   type: { kind: ProductKind; format: ProductFormat }
   /** ORDERED slugs. categories[0] is primary and the only one LaPOS sees. */
@@ -82,6 +91,8 @@ const KNOWN_TAGS = new Set([
   "stock",
   "quantity",
   "image",
+  "coupon",
+  "max_qty",
   "t",
   "a",
   "client",
@@ -226,6 +237,11 @@ export function productEventBody(
     tags.push(["stock", n], ["quantity", n])
   }
 
+  // Emitted only when set, like the SKU: an ordinary product stays
+  // byte-identical to what it published before coupon products existed.
+  if (p.coupon) tags.push(productCouponTag(p.coupon))
+  if (p.maxQty) tags.push(["max_qty", String(p.maxQty)])
+
   for (const img of [...p.images].sort((a, b) => a.order - b.order)) {
     // Dimensions are OMITTED when unknown rather than written as "0x0".
     // WooCommerce does not report them, and a made-up size is worse than no
@@ -270,6 +286,8 @@ export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
   const price = parsePriceTag(e.tags.find((t) => t[0] === "price"))
 
   const stockRaw = tagValue(e, "stock") ?? tagValue(e, "quantity")
+  const coupon = parseProductCouponTag(e.tags.find((t) => t[0] === "coupon"))
+  const maxQty = toInt(tagValue(e, "max_qty"))
 
   const images = e.tags
     .filter((t) => t[0] === "image" && t[1])
@@ -296,6 +314,8 @@ export function parseProductEvent(e: SignedEvent): ParseResult<Product> {
       description: e.content,
       price,
       stock: stockRaw !== undefined ? (toInt(stockRaw) ?? 0) : null,
+      ...(coupon ? { coupon } : {}),
+      ...(maxQty && maxQty > 0 ? { maxQty } : {}),
       visibility: asVisibility(tagValue(e, "visibility")) ?? "on-sale", // spec default
       type: parseTypeTag(e) ?? { kind: "simple", format: "digital" }, // spec defaults
       categories: e.tags

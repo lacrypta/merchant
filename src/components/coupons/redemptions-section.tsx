@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useRates } from "@/hooks/use-rates"
 import { describeBenefit } from "@/lib/domain/coupon"
-import { parseZapRequestOrder } from "@/lib/domain/zap-order"
+import { parseZapRequestOrder, productCouponBenefits } from "@/lib/domain/zap-order"
 
 const dateFormatter = new Intl.DateTimeFormat("es-AR", {
   dateStyle: "medium",
@@ -58,13 +58,17 @@ export function RedemptionsSection() {
         parseZapRequestOrder(r.order, (r.amountMsat ?? 0) / 1000),
         rates?.satPrice ?? null,
         // The snapshot frozen when this very coupon was minted, so the discount
-        // lands on the product it was spent on.
-        r.benefit
+        // lands on the product it was spent on — plus any product coupon it
+        // was stacked with.
+        [
+          ...(r.benefit ? [r.benefit] : []),
+          ...productCouponBenefits(parseZapRequestOrder(r.order, null), products),
+        ]
       )
       if (view) out.set(r.nonce, view)
     }
     return out
-  }, [redemptions, rates?.satPrice])
+  }, [redemptions, rates?.satPrice, products])
 
   if (error) {
     return (

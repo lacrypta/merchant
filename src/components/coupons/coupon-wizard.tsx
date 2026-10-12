@@ -201,6 +201,7 @@ export function CouponWizard({
   const [capCurrency, setCapCurrency] = React.useState<Currency>(
     initial.capCurrency as Currency
   )
+  const [open, setOpen] = React.useState(existing?.open ?? false)
   const [limitUses, setLimitUses] = React.useState(existing?.maxUses != null)
   const [maxUses, setMaxUses] = React.useState(
     existing?.maxUses != null ? String(existing.maxUses) : "50"
@@ -234,8 +235,10 @@ export function CouponWizard({
     freeItems,
     capAmount: capOn ? num(capAmount) : null,
     capCurrency,
-    maxUses: limitUses ? num(maxUses) : null,
-    expiresAt,
+    // A cupón libre is never minted and its terms ride on a catalog product
+    // no server checks at sale time, so neither limit could be enforced.
+    maxUses: limitUses && !open ? num(maxUses) : null,
+    expiresAt: open ? "" : expiresAt,
   }
 
   const parsed = couponFormSchema.safeParse(values)
@@ -283,6 +286,7 @@ export function CouponWizard({
           image: result.data.imageUrl ? result.data.imageUrl : null,
           benefit: benefitFromForm(result.data),
           maxUses: result.data.maxUses,
+          open,
           expiresAt: fromDateInput(result.data.expiresAt),
         })
       } catch (err) {
@@ -584,50 +588,68 @@ export function CouponWizard({
 
           <div className="space-y-3 rounded-xl border border-border bg-surface-2 p-4">
             <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="coupon-limit-uses" className="text-base font-semibold">
-                Limitar cuántos emitís
+              <Label htmlFor="coupon-open" className="text-base font-semibold">
+                Cupón libre (sin código)
               </Label>
-              <Switch
-                id="coupon-limit-uses"
-                checked={limitUses}
-                onCheckedChange={setLimitUses}
-              />
+              <Switch id="coupon-open" checked={open} onCheckedChange={setOpen} />
             </div>
-            {limitUses ? (
-              <Field label="Máximo de emisiones" htmlFor="coupon-max-uses" error={errors.maxUses}>
-                <Input
-                  id="coupon-max-uses"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  className="numeric max-w-40 text-lg md:text-lg"
-                  value={maxUses}
-                  onChange={(e) => setMaxUses(e.target.value)}
-                  aria-invalid={!!errors.maxUses}
-                />
-              </Field>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Sin límite: podés emitir este cupón todas las veces que quieras.
-              </p>
-            )}
+            <p className="text-sm text-muted-foreground">
+              {open
+                ? "No se emite: lo usa cualquiera, ilimitado, al llevar un producto de tipo cupón que lo tenga asignado."
+                : "Se emite un código por cada uso."}
+            </p>
           </div>
 
-          <Field
-            label="Vence"
-            htmlFor="coupon-expires"
-            error={errors.expiresAt}
-            hint="Opcional. Vale hasta el final de ese día."
-          >
-            <Input
-              id="coupon-expires"
-              type="date"
-              className="numeric max-w-52 text-base md:text-base"
-              value={expiresAt}
-              onChange={(e) => setExpiresAt(e.target.value)}
-              aria-invalid={!!errors.expiresAt}
-            />
-          </Field>
+          {open ? null : (
+            <>
+              <div className="space-y-3 rounded-xl border border-border bg-surface-2 p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="coupon-limit-uses" className="text-base font-semibold">
+                    Limitar cuántos emitís
+                  </Label>
+                  <Switch
+                    id="coupon-limit-uses"
+                    checked={limitUses}
+                    onCheckedChange={setLimitUses}
+                  />
+                </div>
+                {limitUses ? (
+                  <Field label="Máximo de emisiones" htmlFor="coupon-max-uses" error={errors.maxUses}>
+                    <Input
+                      id="coupon-max-uses"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      className="numeric max-w-40 text-lg md:text-lg"
+                      value={maxUses}
+                      onChange={(e) => setMaxUses(e.target.value)}
+                      aria-invalid={!!errors.maxUses}
+                    />
+                  </Field>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Sin límite: podés emitir este cupón todas las veces que quieras.
+                  </p>
+                )}
+              </div>
+
+              <Field
+                label="Vence"
+                htmlFor="coupon-expires"
+                error={errors.expiresAt}
+                hint="Opcional. Vale hasta el final de ese día."
+              >
+                <Input
+                  id="coupon-expires"
+                  type="date"
+                  className="numeric max-w-52 text-base md:text-base"
+                  value={expiresAt}
+                  onChange={(e) => setExpiresAt(e.target.value)}
+                  aria-invalid={!!errors.expiresAt}
+                />
+              </Field>
+            </>
+          )}
 
           <PreviewCard
             name={name}

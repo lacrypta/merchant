@@ -25,8 +25,15 @@ import type {
   SignerPort,
 } from "@/lib/nostr/types"
 
-/** Relay used for the nostrconnect:// QR handshake. */
-export const NOSTR_CONNECT_RELAY = "wss://relay.nsec.app"
+/**
+ * Relays for the nostrconnect:// QR handshake.
+ *
+ * More than one on purpose: this was a single relay.nsec.app, and the day it
+ * went dark nobody could log in with a QR — the signer scanned it and waited
+ * on a relay that never answered. Every one listed here accepts kind 24133
+ * from strangers, which is all NIP-46 needs.
+ */
+export const NOSTR_CONNECT_RELAYS = ["wss://nos.lol", "wss://relay.lacrypta.ar"]
 
 /**
  * Kinds this app will ever ask a remote signer to sign.
@@ -175,7 +182,7 @@ export function startNostrConnect(metadata: {
   ensureNostrGlobals()
 
   const permissions = connectPermissions()
-  const signer = new NostrConnectSigner({ relays: [NOSTR_CONNECT_RELAY] })
+  const signer = new NostrConnectSigner({ relays: NOSTR_CONNECT_RELAYS })
   const controller = new AbortController()
 
   const uri = signer.getNostrConnectURI({ ...metadata, permissions })

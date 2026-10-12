@@ -34,7 +34,7 @@ All optional: with none of them, the catalog and the storefront work the same. T
 |---|---|
 | `DATABASE_URL` | Postgres, **only** for coupons. Without it, `/api/coupons/*` answers 503 and the rest of the app runs fine. The direct connection. When both are set, the app **and** the migrations use `DATABASE_POOL_URL`. |
 | `DATABASE_POOL_URL` | The pooler for the same Postgres, if the provider offers one. The app prefers it for queries: on serverless every instance opens its own pool, and against the direct connection that exhausts the limit (or never connects at all — on Supabase the direct host is IPv6-only). |
-| `COUPON_MANAGER_NSEC` | This service's nostr identity: it signs the coupons it issues. Without it, nothing can be minted or redeemed. |
+| `COUPON_MANAGER_NSEC` | This service's nostr identity (CMS): it signs the coupons it issues. Without it, nothing can be minted or redeemed. |
 | `NEXT_PUBLIC_APP_URL` | The public origin. In production **set it**: it is the only thing that makes NIP-98 validation ignore the `x-forwarded-*` headers, which anyone can forge. |
 | `SESSION_JWT_SECRET` | Signs the session JWTs, so the merchant signs with nostr once per shift instead of once per click. Without it a per-process key is used: acceptable on a single instance, **must be set with more than one** or tokens minted by one are rejected by the other. |
 | `LN_PROXY_SECRET` | Signs the LNURL proxy tokens. Without it a per-process key is used and in-flight payments break on every deploy. |
@@ -87,7 +87,7 @@ docker run -d --name merchant-pg -p 55432:5432 \
 
 ```bash
 DATABASE_URL=postgres://merchant:merchant@localhost:55432/merchant
-COUPON_MANAGER_NSEC=nsec1…       # the identity that signs the vouchers
+COUPON_MANAGER_NSEC=nsec1…       # the CMS identity that signs the vouchers
 NEXT_PUBLIC_APP_URL=http://localhost:4321
 SESSION_JWT_SECRET=…             # optional on a single instance
 ```

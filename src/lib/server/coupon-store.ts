@@ -47,6 +47,8 @@ export interface DefinitionInput {
   imageUrl: string | null
   benefit: Benefit
   maxUses: number | null
+  /** See `open` in schema.ts. */
+  open: boolean
   expiresAt: Date | null
 }
 
@@ -113,6 +115,7 @@ export async function createDefinition(
       imageUrl: input.imageUrl,
       ...benefitToColumns(input.benefit),
       maxUses: input.maxUses,
+      open: input.open,
       expiresAt: input.expiresAt,
     })
     .returning()
@@ -139,6 +142,7 @@ export async function patchDefinition(
   if (patch.imageUrl !== undefined) values.imageUrl = patch.imageUrl
   if (patch.benefit !== undefined) Object.assign(values, benefitToColumns(patch.benefit))
   if (patch.maxUses !== undefined) values.maxUses = patch.maxUses
+  if (patch.open !== undefined) values.open = patch.open
   if (patch.expiresAt !== undefined) values.expiresAt = patch.expiresAt
   if (patch.archived !== undefined) values.archivedAt = patch.archived ? new Date() : null
 
@@ -296,6 +300,7 @@ export async function listMintableFor(
           sql`${couponDefinitions.ownerPubkey} IN ${authorized}`
         ),
         isNull(couponDefinitions.archivedAt),
+        eq(couponDefinitions.open, false),
         or(
           isNull(couponDefinitions.expiresAt),
           sql`${couponDefinitions.expiresAt} > now()`
@@ -315,7 +320,7 @@ export async function listMintableFor(
 
 export type MintOutcome =
   | { ok: true; definition: CouponDefinitionRow; mint: CouponMintRow }
-  | { ok: false; reason: "not-found" | "archived" | "expired" | "exhausted" | "corrupt" }
+  | { ok: false; reason: "not-found" | "archived" | "open" | "expired" | "exhausted" | "corrupt" }
 
 /**
  * Issue one coupon.
@@ -345,6 +350,8 @@ export async function mintCoupon(
         and(
           eq(couponDefinitions.id, definitionId),
           isNull(couponDefinitions.archivedAt),
+          // A cupón libre has no nonce to issue: it lives on a catalog product.
+          eq(couponDefinitions.open, false),
           or(
             isNull(couponDefinitions.maxUses),
             sql`${couponDefinitions.mintedCount} < ${couponDefinitions.maxUses}`
@@ -365,6 +372,7 @@ export async function mintCoupon(
         .limit(1)
       if (!row) return { ok: false as const, reason: "not-found" as const }
       if (row.archivedAt) return { ok: false as const, reason: "archived" as const }
+      if (row.open) return { ok: false as const, reason: "open" as const }
       if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
         return { ok: false as const, reason: "expired" as const }
       }

@@ -40,15 +40,44 @@ export interface ZapReceiptOrder {
   itemsCount: number | null
   /** GROSS, before any discount — see buildZapRequestTemplate. */
   totals: ZapOrderTotal[]
-  /** Null when no coupon was used, which is the common case. */
-  coupon: ZapOrderCoupon | null
   /**
-   * What the coupon took off, per currency. `totals` minus this is what the
+   * Every coupon on the order, in tag order — product coupons first, then the
+   * typed one. Empty when none was used, which is the common case.
+   */
+  coupons: ZapOrderCoupon[]
+  /**
+   * What the coupons took off together, per currency. `totals` minus this is what the
    * invoice actually charged.
    */
   discounts: ZapOrderTotal[]
   /** Exact amount carried by the receipt's BOLT-11 invoice. */
   receiptSats: number | null
+}
+
+/** "Vaso + Promo verano", for a row badge or a search haystack. */
+export function couponLabel(order: Pick<ZapReceiptOrder, "coupons">): string {
+  return order.coupons.map((c) => c.name || c.type).join(" + ")
+}
+
+/**
+ * The terms of the PRODUCT coupons an order names, read off the catalog
+ * product that carries each one. A typed coupon is not here: its terms are on
+ * its redemption row.
+ *
+ * ponytail: today's terms, not the ones on the day of the sale — the product
+ * event holds only its latest version. Only the per-line attribution can
+ * drift; the totals come from the order's own tags.
+ */
+export function productCouponBenefits(
+  order: Pick<ZapReceiptOrder, "coupons" | "lines">,
+  products: readonly { d: string; coupon?: { id: string; benefit: Benefit } }[]
+): Benefit[] {
+  return order.coupons.flatMap((c) => {
+    const carrier = products.find(
+      (p) => p.coupon?.id === c.id && order.lines.some((l) => l.d === p.d)
+    )
+    return carrier?.coupon ? [carrier.coupon.benefit] : []
+  })
 }
 
 export type SatAllocationQuality = "exact" | "estimated" | "unavailable"
@@ -194,7 +223,6 @@ export function parseZapRequestOrder(
       return [{ amount, currency: tag[2].trim().toUpperCase() }]
     })
 
-  const couponTag = zapRequest ? firstTag(zapRequest, "coupon") : undefined
 
   return {
     receipt: null,
@@ -202,10 +230,11 @@ export function parseZapRequestOrder(
     lines,
     itemsCount: zapRequest ? parsePositiveInteger(firstTag(zapRequest, "items_count")?.[1]) : null,
     totals: amountTags("total"),
-    coupon:
-      couponTag?.[1] && couponTag[2]
-        ? { id: couponTag[1], type: couponTag[2], name: couponTag[3] ?? "" }
-        : null,
+    coupons: (zapRequest?.tags ?? []).flatMap((tag): ZapOrderCoupon[] =>
+      tag[0] === "coupon" && tag[1] && tag[2]
+        ? [{ id: tag[1], type: tag[2], name: tag[3] ?? "" }]
+        : []
+    ),
     discounts: amountTags("discount"),
     receiptSats,
   }
@@ -230,8 +259,8 @@ export function parseZapRequestOrder(
 export function allocateOrderLineSats(
   order: ZapReceiptOrder,
   rates: SatPriceTable | null,
-  /** The coupon's frozen terms, when the merchant's records still have them. */
-  benefit: Benefit | null = null
+  /** The coupons' terms, when the merchant's records still have them. */
+  benefits: readonly Benefit[] = []
 ): { lines: AllocatedZapOrderLine[]; quality: SatAllocationQuality } {
   const priced = order.lines.every(
     (line) => line.unitAmount !== undefined && line.currency && line.unitAmount >= 0
@@ -242,7 +271,7 @@ export function allocateOrderLineSats(
    * were degraded to fit the URL budget simply has neither.
    */
   const priceable =
-    benefit && priced
+    benefits.length > 0 && priced
       ? order.lines.map((line) => ({
           d: line.d,
           qty: line.qty,
@@ -251,11 +280,16 @@ export function allocateOrderLineSats(
           currency: line.currency!,
         }))
       : null
-  const cut = priceable && benefit ? discountByLine(priceable, benefit) : null
-  const free = priceable && benefit ? freeUnitsFor(priceable, benefit) : []
+  // Stacked coupons add up per line — see stackDiscounts in coupon.ts.
+  const cut = priceable
+    ? benefits
+        .map((b) => discountByLine(priceable, b))
+        .reduce((sum, c) => sum.map((v, i) => v + c[i]!))
+    : null
+  const free = priceable ? benefits.flatMap((b) => freeUnitsFor(priceable, b)) : []
   const decorate = (line: ZapOrderLine, index: number) => ({
     ...line,
-    freeQty: free.find((f) => f.d === line.d)?.qty ?? 0,
+    freeQty: free.filter((f) => f.d === line.d).reduce((n, f) => n + f.qty, 0),
     discount: cut?.[index] ?? 0,
   })
 

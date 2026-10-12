@@ -34,6 +34,8 @@ export interface CouponJson {
   /** null when the stored terms no longer parse — the row is shown as broken. */
   benefit: Benefit | null
   maxUses: number | null
+  /** A cupón libre: no nonce, used through a coupon product. */
+  open: boolean
   minted: number
   claimed: number
   expiresAt: number | null
@@ -77,6 +79,7 @@ export interface CouponInput {
   image: string | null
   benefit: Benefit
   maxUses: number | null
+  open: boolean
   /** Unix seconds. */
   expiresAt: number | null
 }

@@ -585,6 +585,53 @@ export interface DiscountEntry {
   amount: number
 }
 
+/**
+ * A cupón libre riding on a catalog product: having that product in the cart
+ * applies it. No nonce and no claim — the terms are on the product event, so
+ * they are as trustworthy as its price: the merchant signed both.
+ */
+export interface ProductCoupon {
+  id: string
+  name: string
+  benefit: Benefit
+}
+
+/**
+ * `["coupon", id, name, benefitJson]` on a kind-30402, or null.
+ *
+ * Fails closed on the DISCOUNT, never on the product: an unreadable tag leaves
+ * an ordinary product, which is strictly better than guessing at terms.
+ */
+export function parseProductCouponTag(tag: readonly string[] | undefined): ProductCoupon | null {
+  if (!tag || tag[0] !== "coupon" || !isProductD(tag[1]) || typeof tag[2] !== "string") {
+    return null
+  }
+  try {
+    const benefit = parseBenefit(JSON.parse(tag[3] ?? ""))
+    return benefit.ok ? { id: tag[1], name: tag[2], benefit: benefit.value } : null
+  } catch {
+    return null
+  }
+}
+
+export function productCouponTag(c: ProductCoupon): string[] {
+  return ["coupon", c.id, c.name, JSON.stringify(c.benefit)]
+}
+
+/**
+ * The product coupons in a basket, once each.
+ *
+ * Once per CART, however many units carry it: two Vasos do not make the drinks
+ * 10% off. `max_qty` on the product is what limits the units themselves.
+ */
+export function productCouponsOf(lines: readonly CartLine[]): ProductCoupon[] {
+  const out: ProductCoupon[] = []
+  for (const l of lines) {
+    if (l.coupon && l.qty > 0 && !out.some((c) => c.id === l.coupon!.id)) out.push(l.coupon)
+  }
+  return out
+}
+
 /** Units given away, by product `d` — for the "1 gratis" badge on a line. */
 export interface FreeUnits {
   d: string
@@ -626,8 +673,14 @@ export interface PricedCart {
   /** Whole sats taken off. Display only — the charge is `net.sats`. */
   discountSats: number
   freeUnits: FreeUnits[]
-  /** Null when the coupon is discounting something. */
+  /** About the APPLIED coupon only. Null when it is discounting something. */
   unmet: CouponUnmet | null
+  /**
+   * Product coupons that are actually discounting. One that does not match the
+   * basket (a Vaso with no drinks) is simply absent: it is not something the
+   * shopper typed in, so it has nothing to complain about.
+   */
+  productCoupons: ProductCoupon[]
 }
 
 /**
@@ -924,6 +977,34 @@ function byLineFromTerms(
 }
 
 /**
+ * Several coupons on one basket: each priced against the same GROSS lines, and
+ * the results added per currency and per product. Clamping to what the basket
+ * is worth is the caller's job — priceCart does it in sats.
+ *
+ * ponytail: stacked percentages add rather than compound — 5% + 10% on the
+ * same drink is 15%, not 14.5%. Compound by pricing each coupon against the
+ * previous one's net lines if a merchant ever stacks percentages on purpose.
+ */
+export function stackDiscounts(
+  lines: readonly CartLine[],
+  benefits: readonly Benefit[]
+): { entries: DiscountEntry[]; freeUnits: FreeUnits[] } {
+  const entries: DiscountEntry[] = []
+  for (const e of benefits.flatMap((b) => discountEntries(lines, b))) {
+    const found = entries.find((x) => x.currency === e.currency)
+    if (found) found.amount = roundMoney(found.amount + e.amount, e.currency)
+    else entries.push({ ...e })
+  }
+  const freeUnits: FreeUnits[] = []
+  for (const f of benefits.flatMap((b) => freeUnitsFor(lines, b))) {
+    const found = freeUnits.find((x) => x.d === f.d)
+    if (found) found.qty += f.qty
+    else freeUnits.push({ ...f })
+  }
+  return { entries, freeUnits }
+}
+
+/**
  * Price a cart, with or without a coupon.
  *
  * The discount is applied by SCALING every per-currency subtotal by the same
@@ -956,27 +1037,39 @@ export function priceCart(
     discountSats: 0,
     freeUnits: [],
     unmet,
+    productCoupons: [],
   })
 
-  if (!coupon) return none(null)
-  if (lines.length === 0) return none({ kind: "empty-cart" })
+  if (lines.length === 0) return none(coupon ? { kind: "empty-cart" } : null)
 
-  const entries = discountEntries(lines, coupon.benefit)
-  if (entries.length === 0) {
-    const products = missingProducts(lines, coupon.benefit)
-    // Scoped percent/fixed coupons take whichever named product shows up, and
-    // free items apply one by one; multibuy and buyXgetY name what they
-    // specifically require.
-    const anyOf =
-      coupon.benefit.type === "percent" ||
-      coupon.benefit.type === "fixed" ||
-      coupon.benefit.type === "freeItems"
-    return none(
-      products.length > 0
-        ? { kind: "needs-products", products, anyOf }
-        : { kind: "empty-cart" }
-    )
+  // The basket's product coupons stack with the typed one — see stackDiscounts.
+  const productCoupons = productCouponsOf(lines).filter(
+    (c) => discountEntries(lines, c.benefit).length > 0
+  )
+  const benefits = productCoupons.map((c) => c.benefit)
+
+  let unmet: CouponUnmet | null = null
+  if (coupon) {
+    if (discountEntries(lines, coupon.benefit).length > 0) {
+      benefits.push(coupon.benefit)
+    } else {
+      const products = missingProducts(lines, coupon.benefit)
+      // Scoped percent/fixed coupons take whichever named product shows up, and
+      // free items apply one by one; multibuy and buyXgetY name what they
+      // specifically require.
+      const anyOf =
+        coupon.benefit.type === "percent" ||
+        coupon.benefit.type === "fixed" ||
+        coupon.benefit.type === "freeItems"
+      unmet =
+        products.length > 0
+          ? { kind: "needs-products", products, anyOf }
+          : { kind: "empty-cart" }
+    }
   }
+
+  const { entries, freeUnits } = stackDiscounts(lines, benefits)
+  if (entries.length === 0) return none(unmet)
 
   // A discount we cannot convert is a discount we must not guess at: charging
   // the full price is wrong, and charging an invented number is worse.
@@ -1005,8 +1098,9 @@ export function priceCart(
     entries,
     discountExactSats,
     discountSats: Math.round(discountExactSats),
-    freeUnits: freeUnitsFor(lines, coupon.benefit),
-    unmet: null,
+    freeUnits,
+    unmet,
+    productCoupons,
   }
 }
 

@@ -148,7 +148,7 @@ describe("allocateOrderLineSats", () => {
       lines,
       itemsCount: lines.reduce((sum, line) => sum + line.qty, 0),
       totals: [],
-      coupon: null,
+      coupons: [],
       discounts: [],
       receiptSats,
     }
@@ -206,10 +206,9 @@ describe("allocateOrderLineSats", () => {
       { d: "papas", qty: 1, unitAmount: 1_000, currency: "ARS" },
     ]
     // Gross ARS 3000, one beer free ⇒ ARS 2000 charged ⇒ 2000 sats at 1:1.
-    const result = allocateOrderLineSats(order(lines, 2_000), null, {
-      type: "freeItems",
-      items: [{ d: "cerveza", qty: 1 }],
-    })
+    const result = allocateOrderLineSats(order(lines, 2_000), null, [
+      { type: "freeItems", items: [{ d: "cerveza", qty: 1 }] },
+    ])
 
     expect(result.quality).toBe("exact")
     expect(result.lines.map((line) => line.sats)).toEqual([1_000, 1_000])
@@ -229,7 +228,7 @@ describe("allocateOrderLineSats", () => {
         2_700
       ),
       null,
-      { type: "percent", percent: 10 }
+      [{ type: "percent", percent: 10 }]
     )
 
     expect(result.lines.map((line) => line.sats)).toEqual([1_800, 900])
@@ -246,7 +245,7 @@ describe("allocateOrderLineSats", () => {
         0
       ),
       null,
-      { type: "percent", percent: 100 }
+      [{ type: "percent", percent: 100 }]
     )
 
     expect(result.quality).toBe("exact")
@@ -277,11 +276,9 @@ describe("coupon projection", () => {
       ]),
       MERCHANT
     )
-    expect(parsed?.coupon).toEqual({
-      id: "33333333-3333-4333-8333-333333333333",
-      type: "percent",
-      name: "Promo verano",
-    })
+    expect(parsed?.coupons).toEqual([
+      { id: "33333333-3333-4333-8333-333333333333", type: "percent", name: "Promo verano" },
+    ])
     expect(parsed?.discounts).toEqual([{ amount: 100, currency: "ARS" }])
     // Totals stay gross, so the merchant can see gross − discount = charged.
     expect(parsed?.totals).toEqual([{ amount: 1000, currency: "ARS" }])
@@ -289,7 +286,7 @@ describe("coupon projection", () => {
 
   it("reports no coupon on an ordinary order", () => {
     const parsed = parseZapReceiptOrder(receiptFor([["total", "1000", "ARS"]]), MERCHANT)
-    expect(parsed?.coupon).toBeNull()
+    expect(parsed?.coupons).toEqual([])
     expect(parsed?.discounts).toEqual([])
   })
 
@@ -298,11 +295,11 @@ describe("coupon projection", () => {
       receiptFor([["coupon", "an-id", "percent"]]),
       MERCHANT
     )
-    expect(parsed?.coupon).toEqual({ id: "an-id", type: "percent", name: "" })
+    expect(parsed?.coupons).toEqual([{ id: "an-id", type: "percent", name: "" }])
   })
 
   it("ignores a coupon tag missing its type", () => {
-    expect(parseZapReceiptOrder(receiptFor([["coupon", "an-id"]]), MERCHANT)?.coupon).toBeNull()
+    expect(parseZapReceiptOrder(receiptFor([["coupon", "an-id"]]), MERCHANT)?.coupons).toEqual([])
   })
 
   it("drops a discount tag with no currency or an unparseable amount", () => {
@@ -342,11 +339,9 @@ describe("parseZapRequestOrder", () => {
     // and here that is zero.
     expect(parsed.totals).toEqual([{ amount: 1000, currency: "ARS" }])
     expect(parsed.discounts).toEqual([{ amount: 1000, currency: "ARS" }])
-    expect(parsed.coupon).toEqual({
-      id: "33333333-3333-4333-8333-333333333333",
-      type: "freeItems",
-      name: "Café gratis",
-    })
+    expect(parsed.coupons).toEqual([
+      { id: "33333333-3333-4333-8333-333333333333", type: "freeItems", name: "Café gratis" },
+    ])
   })
 
   it("reads the same tags the receipt path does", () => {
@@ -366,7 +361,7 @@ describe("parseZapRequestOrder", () => {
 
     expect(fromRequest.lines).toEqual(fromReceipt.lines)
     expect(fromRequest.totals).toEqual(fromReceipt.totals)
-    expect(fromRequest.coupon).toEqual(fromReceipt.coupon)
+    expect(fromRequest.coupons).toEqual(fromReceipt.coupons)
     expect(fromRequest.discounts).toEqual(fromReceipt.discounts)
   })
 
@@ -376,7 +371,7 @@ describe("parseZapRequestOrder", () => {
       zapRequest: null,
       lines: [],
       totals: [],
-      coupon: null,
+      coupons: [],
       discounts: [],
       receiptSats: null,
     })

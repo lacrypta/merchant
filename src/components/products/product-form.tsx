@@ -4,15 +4,25 @@ import * as React from "react"
 import { Loader2 } from "lucide-react"
 
 import { useCatalog } from "@/components/catalog/catalog-provider"
+import { useCoupons } from "@/components/coupons/use-coupons"
 import { ProductImageUpload } from "@/components/products/product-image-upload"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { SegmentedControl } from "@/components/ui/segmented-control"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { describeBenefit, type ProductCoupon } from "@/lib/domain/coupon"
 import { CURRENCIES, formatPrice, type Currency } from "@/lib/domain/price"
 import { productFormSchema } from "@/lib/domain/product-schema"
+import { slugify } from "@/lib/domain/slug"
 import {
   isSkuTaken,
   normalizeSku,
@@ -68,6 +78,13 @@ export function ProductForm({
 
   const [title, setTitle] = React.useState(base.title)
   const [sku, setSku] = React.useState(base.sku ?? "")
+  /**
+   * While creating, the SKU follows the name ("Fernet con Coca" →
+   * "fernet-con-coca") until the merchant types one of their own. Never on an
+   * edit: the SKU is the join key with WooCommerce, and renaming a product
+   * must not silently re-key it.
+   */
+  const [skuTouched, setSkuTouched] = React.useState(!!existing)
   const [description, setDescription] = React.useState(base.description)
   const [amount, setAmount] = React.useState(
     base.price ? String(base.price.amount) : ""
@@ -80,6 +97,9 @@ export function ProductForm({
     base.stock !== null ? String(base.stock) : ""
   )
   const [visibility, setVisibility] = React.useState<Visibility>(base.visibility)
+  const [isCoupon, setIsCoupon] = React.useState(!!base.coupon)
+  const [coupon, setCoupon] = React.useState<ProductCoupon | null>(base.coupon ?? null)
+  const [maxQty, setMaxQty] = React.useState(base.maxQty ? String(base.maxQty) : "")
   const [selected, setSelected] = React.useState<string[]>(() =>
     base.categories.length > 0
       ? base.categories
@@ -124,15 +144,23 @@ export function ProductForm({
       sku,
       summary: undefined,
       description,
-      amount: Number.isFinite(numericAmount) ? numericAmount : undefined,
+      // A coupon product is never charged for: it only switches its coupon on.
+      amount: isCoupon ? 0 : Number.isFinite(numericAmount) ? numericAmount : undefined,
       currency,
       trackStock,
       stock: trackStock ? Number(stock) : null,
       visibility,
       status: "active" as const,
       categories: selected,
+      couponId: isCoupon ? (coupon?.id ?? "") : "",
+      maxQty: isCoupon && maxQty.trim() ? Number(maxQty) : null,
       imageUrl: image?.url ?? "",
     })
+
+    if (isCoupon && !coupon) {
+      setErrors({ coupon: "Elegí el cupón que aplica." })
+      return
+    }
 
     if (!parsed.success) {
       const next: FieldErrors = {}
@@ -160,6 +188,8 @@ export function ProductForm({
       visibility: v.visibility,
       categories: v.categories,
       images: v.imageUrl && image ? [{ ...image, order: 0 }] : [],
+      coupon: isCoupon && coupon ? coupon : undefined,
+      maxQty: v.maxQty ?? undefined,
       pubkey,
     }
 
@@ -215,7 +245,10 @@ export function ProductForm({
           <Input
             id="p-title"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value)
+              if (!skuTouched) setSku(slugify(e.target.value))
+            }}
             placeholder="Fernet con Coca"
             aria-invalid={!!errors.title}
             maxLength={120}
@@ -226,13 +259,16 @@ export function ProductForm({
           label="SKU"
           error={errors.sku}
           htmlFor="p-sku"
-          hint="La referencia que comparte con WooCommerce u otro sistema. Opcional."
+          hint="Se genera a partir del nombre. La referencia que comparte con WooCommerce u otro sistema."
         >
           <Input
             id="p-sku"
             value={sku}
-            onChange={(e) => setSku(e.target.value)}
-            placeholder="EMP-001"
+            onChange={(e) => {
+              setSku(e.target.value)
+              setSkuTouched(true)
+            }}
+            placeholder="fernet-con-coca"
             autoComplete="off"
             aria-invalid={!!errors.sku}
             maxLength={MAX_SKU_LENGTH}
@@ -240,26 +276,69 @@ export function ProductForm({
           />
         </Field>
 
-        <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
-          <Field label="Precio" error={errors.amount} htmlFor="p-amount" required>
-            <Input
-              id="p-amount"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              inputMode="decimal"
-              autoComplete="off"
-              placeholder="7300"
-              aria-invalid={!!errors.amount}
-              className="numeric"
+        {existing && !isCoupon ? null : (
+          <div className="space-y-3">
+            {/* The type is picked once, when the product is created. */}
+            {existing ? null : (
+              <>
+                <Label>Tipo</Label>
+                <SegmentedControl
+                  aria-label="Tipo de producto"
+                  value={isCoupon ? "coupon" : "normal"}
+                  onValueChange={(v) => setIsCoupon(v === "coupon")}
+                  options={[
+                    { value: "normal", label: "Normal" },
+                    { value: "coupon", label: "Cupón" },
+                  ]}
+                />
+              </>
+            )}
+            {isCoupon ? (
+              <>
+                <CouponPicker value={coupon} onChange={setCoupon} error={errors.coupon} />
+                <Field
+                  label="Máximo por compra"
+                  error={errors.maxQty}
+                  htmlFor="p-max-qty"
+                  hint="Cuántas unidades puede llevar una misma compra. Vacío: sin límite."
+                >
+                  <Input
+                    id="p-max-qty"
+                    value={maxQty}
+                    onChange={(e) => setMaxQty(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="1"
+                    className="numeric max-w-40"
+                    aria-invalid={!!errors.maxQty}
+                  />
+                </Field>
+              </>
+            ) : null}
+          </div>
+        )}
+
+        {isCoupon ? null : (
+          <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+            <Field label="Precio" error={errors.amount} htmlFor="p-amount" required>
+              <Input
+                id="p-amount"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="7300"
+                aria-invalid={!!errors.amount}
+                className="numeric"
+              />
+            </Field>
+            <SegmentedControl
+              aria-label="Moneda"
+              value={currency}
+              onValueChange={(v) => setCurrency(v as Currency)}
+              options={CURRENCIES.map((c) => ({ value: c, label: c }))}
             />
-          </Field>
-          <SegmentedControl
-            aria-label="Moneda"
-            value={currency}
-            onValueChange={(v) => setCurrency(v as Currency)}
-            options={CURRENCIES.map((c) => ({ value: c, label: c }))}
-          />
-        </div>
+          </div>
+        )}
 
         <Field label="Descripción" htmlFor="p-desc">
           <Textarea
@@ -271,7 +350,8 @@ export function ProductForm({
           />
         </Field>
 
-        <div className="space-y-2">
+        {/* Mobile only: from md up the uploader lives in the preview card. */}
+        <div className="space-y-2 md:hidden">
           <Label>Imagen</Label>
           <ProductImageUpload
             value={image}
@@ -386,18 +466,16 @@ export function ProductForm({
         <div className="sticky top-24 space-y-3">
           <p className="text-sm text-muted-foreground">Así se va a ver</p>
           <article className="w-[200px] overflow-hidden rounded-xl border border-border bg-card">
-            <div className="relative aspect-square bg-surface-3">
-              {image ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={image.url}
-                  alt=""
-                  className="size-full object-cover"
-                />
-              ) : (
-                <div aria-hidden className="grid-flat size-full opacity-40" />
-              )}
-            </div>
+            <ProductImageUpload
+              compact
+              value={image}
+              onChange={(nextImage) => {
+                setImage(nextImage)
+                setErrors((current) => ({ ...current, imageUrl: undefined }))
+              }}
+              onBusyChange={setUploadingImage}
+              validationError={errors.imageUrl}
+            />
             <div className="space-y-1 p-3">
               <p className="line-clamp-2 text-sm leading-tight font-semibold">
                 {title || "Nombre del producto"}
@@ -417,6 +495,73 @@ export function ProductForm({
         </div>
       </aside>
     </form>
+  )
+}
+
+/**
+ * The cupones libres this product may carry.
+ *
+ * Its own component so the coupon list — a signed request — is only fetched
+ * once the merchant actually picks "Cupón", not every time a product opens.
+ *
+ * Re-syncs the snapshot to the coupon's CURRENT terms whenever the list loads,
+ * so re-saving a coupon product is also how it picks up an edited coupon.
+ */
+function CouponPicker({
+  value,
+  onChange,
+  error,
+}: {
+  value: ProductCoupon | null
+  onChange: (c: ProductCoupon | null) => void
+  error?: string
+}) {
+  const { coupons, loading } = useCoupons()
+  const { products } = useCatalog()
+  const open = coupons.filter((c) => c.open && c.benefit && c.archivedAt === null)
+  const titleOf = (d: string) => products.find((p) => p.d === d)?.title
+
+  const current = open.find((c) => c.id === value?.id)
+  React.useEffect(() => {
+    if (!current?.benefit) return
+    const fresh = { id: current.id, name: current.name, benefit: current.benefit }
+    if (JSON.stringify(fresh) !== JSON.stringify(value)) onChange(fresh)
+  }, [current, value, onChange])
+
+  return (
+    <Field
+      label="Cupón"
+      error={error}
+      hint={
+        current?.benefit
+          ? describeBenefit(current.benefit, titleOf)
+          : loading
+            ? "Cargando cupones…"
+            : open.length === 0
+              ? "No tenés cupones libres. Creá uno en Cupones con la opción \"Cupón libre\"."
+              : "Al llevar este producto, se aplica este cupón a la compra."
+      }
+      required
+    >
+      <Select
+        value={value?.id ?? ""}
+        onValueChange={(id) => {
+          const c = open.find((x) => x.id === id)
+          onChange(c?.benefit ? { id: c.id, name: c.name, benefit: c.benefit } : null)
+        }}
+      >
+        <SelectTrigger className="w-full" aria-invalid={!!error}>
+          <SelectValue placeholder={value?.name ?? "Elegí un cupón libre"} />
+        </SelectTrigger>
+        <SelectContent>
+          {open.map((c) => (
+            <SelectItem key={c.id} value={c.id}>
+              {c.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
   )
 }
 

@@ -522,7 +522,7 @@ Its own endpoint rather than a field on `GET /api/coupons`: that response is wha
 | `404` | Does not exist |
 | `409` | `Se agotaron los cupones disponibles.` |
 | `410` | `El cupón fue archivado.` / `El cupón está vencido.` |
-| `503` | No database, no manager, or the definition does not parse |
+| `503` | No database, no CMS, or the definition does not parse |
 
 **The nonce is 16 random bytes in base64url (22 characters):** unguessable and it fits in any QR. **It is a bearer token** — whoever holds it can redeem.
 
@@ -704,7 +704,7 @@ Reading it back is **not here**: it rides along with `GET /api/coupons`, so the 
 
 ### `GET /api/coupons/manager`
 
-The pubkey that signs the vouchers. No auth — it is public information and a POS needs it to verify.
+The CMS pubkey that signs the vouchers. No auth — it is public information and a POS needs it to verify.
 
 ```json
 {
@@ -731,7 +731,7 @@ The only cacheable route: `public, max-age=300`. The key is stable for the life 
 | `410` | Terminal: expired or archived | Do not retry |
 | `413` | Body over 16 KB | Not our use case |
 | `429` | Rate limit | Wait `retryAfter` seconds |
-| `503` | No database, no manager, or a database error | Retry with backoff — but see below for the two creating endpoints |
+| `503` | No database, no CMS, or a database error | Retry with backoff — but see below for the two creating endpoints |
 
 `404` for "belongs to somebody else" is deliberate: to a stranger probing UUIDs, "does not exist" and "not yours" have to look the same.
 

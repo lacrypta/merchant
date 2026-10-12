@@ -1,0 +1,1 @@
+ALTER TABLE "coupon_definitions" ADD COLUMN "open" boolean DEFAULT false NOT NULL;

@@ -18,6 +18,7 @@ import {
   settle,
   signZapRequest,
   verifyPreimage,
+  wireSafe,
   type BuildOrderInput,
   type Order,
   type OrderLine,
@@ -613,7 +614,7 @@ describe("coupon tags on the zap request", () => {
   const withCoupon = (over: Partial<BuildOrderInput> = {}) =>
     fitZapRequest(
       input({
-        coupon: { applied, discount: [{ currency: "ARS", amount: 2190 }] },
+        coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 2190 }] },
         ...over,
       })
     ).template
@@ -628,7 +629,7 @@ describe("coupon tags on the zap request", () => {
     const l = [{ d: lines(1)[0]!.d, qty: 1, title: "x", unitAmount: 1000, currency: "ARS" }]
     const tags = withCoupon({
       lines: l,
-      coupon: { applied, discount: [{ currency: "ARS", amount: 100 }] },
+      coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 100 }] },
     }).tags
     expect(tags).toContainEqual(["total", "1000", "ARS"])
     expect(tags).toContainEqual(["discount", "100", "ARS"])
@@ -641,7 +642,7 @@ describe("coupon tags on the zap request", () => {
         { d: lines(2)[1]!.d, qty: 1, title: "b", unitAmount: 2, currency: "USD" },
       ],
       coupon: {
-        applied,
+        applied: [applied],
         discount: [
           { currency: "ARS", amount: 10 },
           { currency: "USD", amount: 0.2 },
@@ -665,7 +666,7 @@ describe("coupon tags on the zap request", () => {
     const fitted = fitZapRequest(
       input({
         lines: lines(40),
-        coupon: { applied, discount: [{ currency: "ARS", amount: 5000 }] },
+        coupon: { applied: [applied], discount: [{ currency: "ARS", amount: 5000 }] },
       })
     )
     expect(fitted.fidelity).toBeGreaterThan(1)
@@ -682,5 +683,13 @@ describe("coupon tags on the zap request", () => {
     const plain = signZapRequest(fitZapRequest(input()).template)
     const discounted = signZapRequest(withCoupon())
     expect(discounted.id).not.toBe(plain.id)
+  })
+})
+
+describe("wireSafe", () => {
+  // Primal answers 500 to a zap request with a bare `%` in it.
+  it("keeps percent signs out of the zap request", () => {
+    expect(wireSafe("5% al escabio")).toBe("5％ al escabio")
+    expect(wireSafe("Sin descuento")).toBe("Sin descuento")
   })
 })

@@ -48,8 +48,10 @@ import { useRates } from "@/hooks/use-rates"
 import { KINDS } from "@/lib/domain/kinds"
 import type { Benefit } from "@/lib/domain/coupon"
 import {
+  couponLabel,
   parseZapReceiptOrder,
   parseZapRequestOrder,
+  productCouponBenefits,
   type AllocatedZapOrderLine,
   type ZapOrderTotal,
   type ZapReceiptOrder,
@@ -316,24 +318,26 @@ export function OrdersScreen() {
    * the right line. Matched by order first; failing that, by coupon, because a
    * coupon redeemed before this app started filing orders still has its terms.
    */
-  const benefitFor = React.useCallback(
-    (order: ZapReceiptOrder): Benefit | null => {
-      const couponId = order.coupon?.id
-      if (!couponId) return null
+  const benefitsFor = React.useCallback(
+    (order: ZapReceiptOrder): Benefit[] => {
+      if (order.coupons.length === 0) return []
       const requestId = order.zapRequest?.id
       const exact = requestId
         ? redemptions.find((r) => r.orderId === requestId)
         : undefined
-      return (exact ?? redemptions.find((r) => r.couponId === couponId))?.benefit ?? null
+      const typed = (
+        exact ?? redemptions.find((r) => order.coupons.some((c) => c.id === r.couponId))
+      )?.benefit
+      return [...(typed ? [typed] : []), ...productCouponBenefits(order, products)]
     },
-    [redemptions]
+    [redemptions, products]
   )
 
   const orderViews = React.useMemo<OrderView[]>(() => {
     const paid = (receiptsQuery.data ?? [])
       .map((receipt) => parseZapReceiptOrder(receipt, pubkey ?? ""))
       .map((order) =>
-        order ? buildOrderView(order, rates?.satPrice ?? null, benefitFor(order)) : null
+        order ? buildOrderView(order, rates?.satPrice ?? null, benefitsFor(order)) : null
       )
       .filter((view): view is OrderView => view !== null)
 
@@ -350,12 +354,15 @@ export function OrdersScreen() {
     const reclaimed = redemptions
       .filter((r) => r.amountMsat === 0 && r.order && !receipted.has(r.order.id))
       .map((r) =>
-        buildOrderView(parseZapRequestOrder(r.order, 0), rates?.satPrice ?? null, r.benefit)
+        buildOrderView(parseZapRequestOrder(r.order, 0), rates?.satPrice ?? null, [
+          ...(r.benefit ? [r.benefit] : []),
+          ...productCouponBenefits(parseZapRequestOrder(r.order, 0), products),
+        ])
       )
       .filter((view): view is OrderView => view !== null)
 
     return [...paid, ...reclaimed]
-  }, [receiptsQuery.data, redemptions, pubkey, rates?.satPrice, benefitFor])
+  }, [receiptsQuery.data, redemptions, pubkey, rates?.satPrice, benefitsFor, products])
 
   const currencies = React.useMemo(
     () =>
@@ -391,8 +398,8 @@ export function OrdersScreen() {
       const haystack = [
         view.id,
         view.order.zapRequest?.id ?? "",
-        view.order.coupon?.name ?? "",
-        view.order.coupon?.id ?? "",
+        couponLabel(view.order),
+        ...view.order.coupons.map((c) => c.id),
         ...view.lines.flatMap((line) => [
           line.d,
           productTitles.get(line.d) ?? "",
@@ -626,7 +633,7 @@ export function OrdersScreen() {
         view.itemCount,
         view.source === "claim" ? 0 : view.order.receiptSats,
         exportTotals(view.totals),
-        view.order.coupon ? view.order.coupon.name || view.order.coupon.type : "",
+        couponLabel(view.order),
         exportTotals(view.order.discounts),
         allocationLabel(view.quality),
       ])
@@ -1008,14 +1015,14 @@ export function OrdersScreen() {
                                     dialog: the merchant reconciling the day
                                     needs to see which sales were discounted
                                     without opening every one of them. */}
-                                {view.order.coupon ? (
+                                {view.order.coupons.length > 0 ? (
                                   <Badge
                                     variant="outline"
                                     className="max-w-40 truncate border-border-strong"
-                                    title={view.order.coupon.id}
+                                    title={view.order.coupons.map((c) => c.id).join(" · ")}
                                   >
                                     <Ticket className="size-3" aria-hidden />
-                                    {view.order.coupon.name || view.order.coupon.type}
+                                    {couponLabel(view.order)}
                                   </Badge>
                                 ) : null}
                                 {view.quality === "estimated" ? (

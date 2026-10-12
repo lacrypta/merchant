@@ -1,4 +1,9 @@
-import { isValidNonce, parseBenefit, type AppliedCoupon } from "@/lib/domain/coupon"
+import {
+  isValidNonce,
+  parseBenefit,
+  type AppliedCoupon,
+  type ProductCoupon,
+} from "@/lib/domain/coupon"
 import type { Product, Visibility } from "@/lib/domain/product"
 import { quote, type Quote, type SatPriceTable } from "@/lib/domain/rates"
 
@@ -26,6 +31,10 @@ export interface CartItem {
   /** null ⇒ untracked, not zero. */
   stock: number | null
   visibility: Visibility
+  /** A coupon product: in the cart, it applies this cupón libre. */
+  coupon?: ProductCoupon
+  /** Most units one order may hold, on top of stock. Absent ⇒ no limit. */
+  maxQty?: number
 }
 
 /** Keyed by `d`, for reconciling a stored cart against the live catalog. */
@@ -44,6 +53,8 @@ export interface CartLine {
   currency: string
   thumbUrl?: string
   preOrder?: boolean
+  /** Denormalised like the price: the line keeps the terms it was added with. */
+  coupon?: ProductCoupon
 }
 
 export interface Cart {
@@ -84,12 +95,18 @@ export function toCartItem(p: Product): CartItem {
     price: p.price ? { amount: p.price.amount, currency: p.price.currency } : null,
     stock: p.stock,
     visibility: p.visibility,
+    ...(p.coupon ? { coupon: p.coupon } : {}),
+    ...(p.maxQty ? { maxQty: p.maxQty } : {}),
   }
 }
 
-/** Untracked stock (null) is unlimited; tracked stock is a hard ceiling. */
-export function maxQty(item: Pick<CartItem, "stock">): number {
-  return item.stock === null ? Number.POSITIVE_INFINITY : Math.max(0, item.stock)
+/**
+ * Untracked stock (null) is unlimited; tracked stock is a hard ceiling, and so
+ * is the product's own per-order limit.
+ */
+export function maxQty(item: Pick<CartItem, "stock" | "maxQty">): number {
+  const stock = item.stock === null ? Number.POSITIVE_INFINITY : Math.max(0, item.stock)
+  return Math.min(stock, item.maxQty ?? Number.POSITIVE_INFINITY)
 }
 
 export function isAddable(item: CartItem): boolean {
@@ -138,6 +155,7 @@ export function addToCart(
     currency: item.price.currency,
     thumbUrl: item.thumbUrl,
     preOrder: item.visibility === "pre-order" ? true : undefined,
+    ...(item.coupon ? { coupon: item.coupon } : {}),
   }
 
   return {
@@ -307,8 +325,8 @@ export function parseCart(raw: string | null, now: number): Cart | null {
       return null
     }
 
-    const lines = c.lines.filter(isCartLine)
-    if (lines.length !== c.lines.length) return null
+    if (!c.lines.every(isCartLine)) return null
+    const lines = c.lines.map(withParsedCoupon)
 
     // A bad coupon drops the COUPON, not the cart: the lines are still exactly
     // what the shopper chose, and throwing them away to punish a malformed
@@ -345,6 +363,16 @@ function parseAppliedCoupon(value: unknown): AppliedCoupon | null {
     ...(typeof c.image === "string" ? { image: c.image } : {}),
     ...(typeof c.claimedAt === "number" ? { claimedAt: c.claimedAt } : {}),
   }
+}
+
+/** A line coupon that no longer parses is dropped; the line itself stays. */
+function withParsedCoupon(line: CartLine): CartLine {
+  if (line.coupon === undefined) return line
+  const { coupon, ...rest } = line
+  const benefit = parseBenefit(coupon?.benefit)
+  return benefit.ok && typeof coupon.id === "string" && typeof coupon.name === "string"
+    ? { ...rest, coupon: { id: coupon.id, name: coupon.name, benefit: benefit.value } }
+    : rest
 }
 
 function isCartLine(v: unknown): v is CartLine {

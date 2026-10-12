@@ -39,7 +39,7 @@ export function CartButton() {
       <ShoppingBag className="size-4" aria-hidden />
       <Odometer value={count} format={String} />
       {total !== null ? (
-        <span className="hidden sm:inline">
+        <span className="hidden md:inline">
           <Odometer
             value={roundFor(total, displayCurrency)}
             format={(n) => formatPrice(n, displayCurrency)}

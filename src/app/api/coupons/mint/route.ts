@@ -67,6 +67,8 @@ export async function POST(request: Request) {
           return fail("No encontramos ese cupón.", 404, METHODS)
         case "archived":
           return fail("El cupón fue archivado.", 410, METHODS)
+        case "open":
+          return fail("Es un cupón libre: no se emite, se usa desde su producto.", 409, METHODS)
         case "expired":
           return fail("El cupón está vencido.", 410, METHODS)
         case "exhausted":
